@@ -26,8 +26,7 @@ A FULLY synchronized non-coder friendly HTML5 video player for Minecraft's WebDi
 * Lightweight Node.js + Express server (excluding media tooling)
 * Custom video control zones  designed for the WebDisplays mod thats still usable in normal web browsers(click-based)
 * Automatic video preloading for smooth transitions
-* Dynamic Audio/Subtitle track changing supporting .ass(mostly) and .vtt, you can extract these directly from admin panel
-> implement into your own projects [here](https://www.npmjs.com/package/web-subtitle-renderer)! 
+* Dynamic Audio/Subtitle track changing supporting .ass([jassub](https://www.npmjs.com/package/jassub) and [wsr](https://www.npmjs.com/package/web-subtitle-renderer)) and .vtt(wsr), you can extract subs directly from admin panel
 * Minimal UI in view mode
 * Modernized UI with Glassmorphism in admin panel
 * Tab to use ffmpeg's provided tools without needing much knowledge of using CLI
@@ -133,6 +132,9 @@ run.bat                # Windows startup script
 start.sh               # Linux startup script
 config.env             # Configuration file, this is plain text (port, settings, etc.)
 legacylauncher.bat     # Old startup script that is not updated but reliable, written in batch
+postinstall.js         # Fixes, bundling and whatnot after npm install
+generate-ssl.bat/sh    # Generates ssl for https usage, WILL give not trusted warn since this is self signed
+subtitles.js           # wsr code
 ```
 
 ---
@@ -142,22 +144,23 @@ legacylauncher.bat     # Old startup script that is not updated but reliable, wr
 Edit `config.env` to customize:
 
 ```ini
-port: [1024-49151]          # Server port
-volume_step: [1-20]         # Volume adjustment percentage
-skip_seconds: [5-60]        # Skip duration in seconds
-join_mode: sync/reset       # Decides what happens when a new user joins the watch party (more info in actual config)
-HTTPS: t/f                  # Whether you want to use https or not, but you also need cert and key files
-bsl_s2_mode: any/all        # Changing requirements of BSL-S² to if all clients should have file or not
-video_autoplay: t/f         # Explains itself
-admin_fingerprint_lock: t/f # Generates a fingerprint from to first machine to access /admin to not let others reach it (t/f)
-bsl_advanced_match: t/f     # Whether or not if BSL-S² should use Advanced match to check if 2 given videos are the same
-...threshold: [1-4]         # How many criterias should advanced match check
-skip_intro_seconds:         # How many seconds the "Skip Intro" button jumps forward
-controls_disabled: t/f      # If controls of clients should be disabled
-sync_disabled: t/f          # If clients should keep control of their own video but should not send those controls to server and get overridden by server
-chat_enabled: t/f           # Yeah
-data_hydration: t/f         # When enabled, the server injects initial data into admin.html to save a round-trip, improves overall performance
-max_volume: [100-1000]      # How much should clients be able to crank the volume up to
+port: [1024-49151]            # Server port
+volume_step: [1-20]           # Volume adjustment percentage
+skip_seconds: [5-60]          # Skip duration in seconds
+join_mode: sync/reset         # Decides what happens when a new user joins the watch party (more info in actual config)
+HTTPS: t/f                    # Whether you want to use https or not, but you also need cert and key files
+bsl_s2_mode: any/all          # Changing requirements of BSL-S² to if all clients should have file or not
+video_autoplay: t/f           # Explains itself
+admin_fingerprint_lock: t/f   # Generates a fingerprint from to first machine to access /admin to not let others reach it (t/f)
+bsl_advanced_match: t/f       # Whether or not if BSL-S² should use Advanced match to check if 2 given videos are the same
+...threshold: [1-4]           # How many criterias should advanced match check
+skip_intro_seconds:           # How many seconds the "Skip Intro" button jumps forward
+controls_disabled: t/f        # If controls of clients should be disabled
+sync_disabled: t/f            # If clients should keep control of their own video but should not send those controls to server and get overridden by server
+chat_enabled: t/f             # Yeah
+data_hydration: t/f           # When enabled, the server injects initial data into admin.html to save a round-trip, improves overall performance
+max_volume: [100-1000]        # How much should clients be able to crank the volume up to
+subtitle_renderer: wsr/jassub # Which subtitle renderer should be used to render .ass subtitles, wsr is generally more compatible than jassub
 ```
 
 ---
