@@ -3,7 +3,6 @@
 Open Command Prompt(CMD), and write these commands in order or whichever ones you need
 
 ```cmd
-winget install ffmpeg
 winget install --id OpenJS.NodeJS.LTS -e
 md(or cd in some cases) (Your path to the code)
 npm install
