@@ -20,6 +20,7 @@ A FULLY synchronized non-coder friendly HTML5 video player originally for Minecr
 * [Configuration](#️-configuration)
 * [License](#license)
 * [Credits](#-credits)
+* [Truth](truth.md)
 
 ---
 
