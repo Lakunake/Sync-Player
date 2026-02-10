@@ -8,6 +8,15 @@ winget install --id OpenJS.NodeJS.LTS -e
 md(or cd in some cases) (Your path to the code)
 npm install
 ```
+
+**I get a white screen in minecraft and get a non trusted message on chrome with https on**
+
+If you're just gonna use chrome, you can just skip that page with the button to the bottom right of the page.
+
+If you're gonna use it with minecraft, follow this tut:
+
+>WILL UPDATE LATER
+
 **Subtitle/Audio track changing does not work**
 
 Extract Audio/Subtitle tracks and relaunch playlist through ffmpeg tools
