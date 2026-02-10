@@ -5,6 +5,23 @@ A FULLY synchronized non-coder friendly HTML5 video player originally for Minecr
 > Frequently Asked Questions: [FAQ](FAQ.md)
 
 ---
+## Table of Contents
+
+* [Requirements](#requirements)
+* [Features](#features)
+* [Controls](#controls)
+    * [Client Controls](#client-controls-touchclick-interface)
+    * [Admin Controls](#admin-controls-web-interface)
+* [Hosting Tutorials](#hosting-tutorials)
+    * [Method 1: Direct Hosting](#method-1-lan-or-public-ip-direct-hosting)
+    * [Method 2: Tailscale](#method-2-tailscale-virtual-lan)
+    * [Method 3: Cloud Hosting](#method-3-cloud-hosting-render-heroku-replit-etc)
+* [File Structure](#-file-structure)
+* [Configuration](#️-configuration)
+* [License](#license)
+* [Credits](#-credits)
+
+---
 
 ## Requirements
 > these are auto-installed with console.ps1/run.bat so you don't have it install it yourself
