@@ -3,6 +3,7 @@
 
 # Memory/data files
 memory/
+truth.md
 
 # SSL certificates
 *.pem
