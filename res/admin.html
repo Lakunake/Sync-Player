@@ -519,6 +519,81 @@
                 </div>
               </div>
 
+              <!-- Subtitle Tools Section -->
+              <div class="ffmpeg-section" style="margin-bottom: 0;">
+                <div class="ffmpeg-header">
+                  <h3>📝 Subtitle Tools</h3>
+                </div>
+                <div class="ffmpeg-controls subtitle-tools">
+                  <div
+                    style="margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #333; padding-bottom: 10px;">
+                    <label
+                      style="display: flex; align-items: center; cursor: pointer; font-size: 13px; font-weight: bold; color: #ddd;">
+                      <input type="checkbox" id="subtool-orphan-mode"
+                        style="margin-right: 8px; width: 16px; height: 16px;">
+                      Show Orphan Subtitles
+                    </label>
+                    <button class="text-btn" style="font-size: 11px;" onclick="refreshSubtitleToolLists()">↻
+                      Refresh</button>
+                  </div>
+
+                  <!-- Standard Mode Controls -->
+                  <div id="subtool-standard-controls">
+                    <label style="color: #888; font-size: 11px; display: block; margin-bottom: 4px;">Source Video (Has
+                      Subtitle)</label>
+                    <select id="subtool-source-input" class="dropdown" data-drop-up="true"
+                      style="width: 100%; margin-bottom: 10px;">
+                      <option value="">Select source video...</option>
+                    </select>
+
+                    <label style="color: #888; font-size: 11px; display: block; margin-bottom: 4px;">Subtitle
+                      Track</label>
+                    <select id="subtool-track-input" class="dropdown" data-drop-up="true"
+                      style="width: 100%; margin-bottom: 10px;" disabled>
+                      <option value="">Select source first...</option>
+                    </select>
+                  </div>
+
+                  <!-- Orphan Mode Controls -->
+                  <div id="subtool-orphan-controls" style="display: none;">
+                    <label style="color: #888; font-size: 11px; display: block; margin-bottom: 4px;">Orphan Subtitle
+                      File (Unassigned)</label>
+                    <select id="subtool-orphan-input" class="dropdown" data-drop-up="true"
+                      style="width: 100%; margin-bottom: 10px;">
+                      <option value="">Loading orphans...</option>
+                    </select>
+                    <div class="ffmpeg-warning" style="margin-bottom: 10px; font-size: 11px;">
+                      ℹ️ Converts .srt to .vtt automatically.
+                    </div>
+                  </div>
+
+                  <label style="color: #888; font-size: 11px; display: block; margin-bottom: 4px;">Target Video (Needs
+                    Subtitle)</label>
+                  <select id="subtool-target-input" class="dropdown" data-drop-up="true"
+                    style="width: 100%; margin-bottom: 15px;">
+                    <option value="">Select target video...</option>
+                  </select>
+
+                  <div style="display: flex; gap: 10px;" id="subtool-actions-standard">
+                    <button class="ffmpeg-btn" onclick="runSubtitleTool('rebind')"
+                      style="flex: 1; justify-content: center;" title="Move subtitle from Source to Target (Rename)">
+                      Rebind (Move)
+                    </button>
+                    <button class="ffmpeg-btn" onclick="runSubtitleTool('share')"
+                      style="flex: 1; justify-content: center;" title="Add subtitle to Target (Keep on Source)">
+                      Share (Link)
+                    </button>
+                  </div>
+
+                  <div style="display: none;" id="subtool-actions-orphan">
+                    <button class="ffmpeg-btn" onclick="runSubtitleTool('bind-orphan')"
+                      style="flex: 1; justify-content: center; background: #28a745;" title="Bind and convert if needed">
+                      Bind Orphan to Video
+                    </button>
+                  </div>
+                </div>
+              </div>
+
             </div>
 
             <!-- Right Column: Queue -->

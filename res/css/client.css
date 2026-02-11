@@ -7,6 +7,13 @@
       overflow: hidden;
       position: relative;
       /* Positioning context for JASSUB canvas */
+      cursor: default;
+      transition: cursor 0s;
+    }
+
+    /* Hide cursor when idle */
+    body.idle {
+      cursor: none;
     }
 
     video {
@@ -209,10 +216,10 @@
     }
 
     .subtitle-line.vtt-style {
-      font-size: clamp(16px, 4vw, 32px);
+      font-size: clamp(24px, 5vh, 80px);
       background: rgba(0, 0, 0, 0.5);
-      padding: 2px 8px;
-      border-radius: 4px;
+      padding: 4px 12px;
+      border-radius: 6px;
     }
 
     .subtitle-line.ass-style {
@@ -492,6 +499,30 @@
     #chat-header.idle-hidden {
       opacity: 0;
       pointer-events: none;
+    }
+
+    /* Hide cursor and most chat elements when body is idle */
+    body.idle #chat-header,
+    body.idle #chat-input-area,
+    body.idle #chat-input,
+    body.idle #chat-toggle-btn {
+      opacity: 0 !important;
+      pointer-events: none !important;
+      transition: opacity 0.5s ease;
+    }
+
+    /* When collapsed, hide everything including messages */
+    body.idle #chat-widget.collapsed,
+    body.idle #chat-widget.collapsed #chat-messages {
+      opacity: 0 !important;
+      pointer-events: none !important;
+      transition: opacity 0.5s ease;
+    }
+
+    /* When expanded, keep messages visible even when idle */
+    body.idle #chat-widget:not(.collapsed) #chat-messages {
+      opacity: 1 !important;
+      pointer-events: auto;
     }
 
     #chat-header-left {

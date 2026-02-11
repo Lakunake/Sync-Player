@@ -168,6 +168,40 @@
       padding: 8px 16px;
       border-radius: 20px;
       font-size: 14px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    /* Mobile responsive header */
+    @media (max-width: 768px) {
+      .header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 12px 15px;
+      }
+
+      .header h1 {
+        font-size: 18px;
+      }
+
+      .status-group {
+        width: 100%;
+        flex-wrap: wrap;
+        margin-left: 0;
+        justify-content: flex-start;
+      }
+
+      .connection-status {
+        padding: 6px 12px;
+        font-size: 13px;
+      }
+
+      .hevc-warning,
+      .vpn-warning {
+        font-size: 11px !important;
+        flex: 1 1 100%;
+      }
     }
 
     .status-dot {
@@ -1691,10 +1725,7 @@
         max-height: 90vh;
       }
 
-      .panel {
-        min-width: 0 !important;
-        width: 100% !important;
-      }
+      /* .panel merged below */
 
       .video-thumbnail {
         min-height: 180px;
@@ -1717,6 +1748,8 @@
 
       .panel {
         padding: 15px;
+        min-width: 0 !important;
+        width: 100% !important;
       }
 
       #logs-container {
@@ -1867,6 +1900,14 @@
       border: 1px solid rgba(255, 255, 255, 0.05);
     }
 
+    .ffmpeg-section .custom-select-wrapper {
+      margin-bottom: 12px;
+    }
+
+    .ffmpeg-section .custom-select-wrapper:last-child {
+      margin-bottom: 0;
+    }
+
     .ffmpeg-header {
       display: flex;
       justify-content: space-between;
@@ -1985,6 +2026,31 @@
       background: rgba(76, 175, 80, 0.2);
       color: #4CAF50;
       border: 1px solid rgba(76, 175, 80, 0.3);
+    }
+
+    /* Text Button (inline minimal action) */
+    .text-btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: #aaa;
+      padding: 4px 10px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.2s;
+    }
+
+    .text-btn:hover {
+      background: rgba(33, 150, 243, 0.2);
+      color: #2196F3;
+      border-color: rgba(33, 150, 243, 0.3);
+    }
+
+    /* Subtitle Tools — Override ffmpeg-controls grid to single-column */
+    .ffmpeg-controls.subtitle-tools {
+      grid-template-columns: 1fr;
+      align-items: stretch;
+      gap: 20px;
     }
 
     /* Password Modal Specifics */

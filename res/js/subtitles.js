@@ -85,17 +85,44 @@ class SubtitleRenderer {
                 let payload = [];
                 i++;
                 while (i < lines.length && lines[i].trim() !== '') {
-                    payload.push(lines[i]); // Keep html tags for now
+                    const lineStr = lines[i];
+                    // Filter ASS drawing commands often found in raw VTT extractions
+                    // Pattern: 'm <coords> ...'
+                    if (/^m\s+-?\d+/.test(lineStr.trim())) {
+                        console.warn(`[VTT-Debug] Ignored drawing line: "${lineStr.substring(0, 50)}..."`);
+                    } else {
+                        payload.push(lineStr);
+                    }
                     i++;
                 }
+
+                if (payload.length === 0) {
+                    console.warn(`[VTT-Debug] Skipped cue with no valid payload at ${start} --> ${end}`);
+                    continue;
+                }
+
+                const textContent = payload.join('<br>');
+
+                // Deduplicate consecutive identical cues
+                let isDuplicate = false;
+                if (this.cues.length > 0) {
+                    const last = this.cues[this.cues.length - 1];
+                    if (last.start === start && last.end === end && last.text === textContent) {
+                        console.log(`[VTT-Debug] Deduplicated cue: ${start} --> ${end}`);
+                        isDuplicate = true;
+                    }
+                }
+
+                if (isDuplicate) continue;
 
                 this.cues.push({
                     start,
                     end,
-                    text: payload.join('<br>'),
-                    html: payload.join('<br>').replace(/<v [^>]+>/g, '').replace(/<\/v>/g, ''), // Basic strip of voice tags
+                    text: textContent,
+                    html: textContent.replace(/<v [^>]+>/g, '').replace(/<\/v>/g, ''), // Basic strip of voice tags
                     format: 'vtt'
                 });
+                console.log(`[VTT-Debug] Accepted: ${start} --> ${end} : "${textContent.substring(0, 30)}..."`);
             } else {
                 i++;
             }
@@ -384,6 +411,8 @@ class SubtitleRenderer {
         const currentKeys = this.activeCues.map(c => c.rawText + c.start).join('|');
 
         if (activeKeys !== currentKeys) {
+            const firstText = active.length > 0 ? active[0].text.substring(0, 30).replace(/<[^>]*>/g, '') + '...' : 'None';
+            console.log(`[SubtitleRenderer] Active cues changed: ${active.length} active. First: "${firstText}"`);
             this.activeCues = active;
             this.render();
         }

@@ -5,6 +5,8 @@ const { Server } = require('socket.io');
 const path = require('path');
 const fs = require('fs');
 const { execFile, exec, spawn } = require('child_process');
+const util = require('util');
+const execFileAsync = util.promisify(execFile);
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { RateLimiterMemory } = require('rate-limiter-flexible');
@@ -40,6 +42,14 @@ try {
   FilterAPI = avApi.FilterAPI;
 } catch (e) {
   console.warn(`${colors.yellow}node-av not found or failed to load. FFmpeg features disabled.${colors.reset}`, e.message);
+}
+
+// node-av ffmpeg binary path
+let ffmpegPath;
+try {
+  ffmpegPath = require('node-av/ffmpeg').ffmpegPath;
+} catch (e) {
+  console.warn('node-av/ffmpeg not found.');
 }
 
 // =================================================================
@@ -928,9 +938,14 @@ async function runFfmpegJob(jobId, type, params) {
 
         await new Promise((resolve, reject) => {
           const proc = spawn('ffmpeg', args);
-          proc.on('close', (code) => {
-            if (code === 0) resolve();
-            else reject(new Error(`FFmpeg exited with code ${code}`));
+          proc.on('close', async (code) => {
+            if (code === 0) {
+              // Post-process VTT to clean artifacts
+              if (targetFormat === 'vtt' || ext === 'vtt') {
+                await cleanVttFile(outputUrl);
+              }
+              resolve();
+            } else reject(new Error(`FFmpeg exited with code ${code}`));
           });
           proc.on('error', (err) => reject(err));
         });
@@ -1100,14 +1115,7 @@ class Room {
   }
 
   getCurrentTrackSelections() {
-    if (this.playlist.videos.length > 0 && this.playlist.currentIndex >= 0 && this.playlist.currentIndex < this.playlist.videos.length) {
-      const currentVideo = this.playlist.videos[this.playlist.currentIndex];
-      return {
-        audioTrack: currentVideo.selectedAudioTrack !== undefined ? currentVideo.selectedAudioTrack : 0,
-        subtitleTrack: currentVideo.selectedSubtitleTrack !== undefined ? currentVideo.selectedSubtitleTrack : -1
-      };
-    }
-    return { audioTrack: 0, subtitleTrack: -1 };
+    return _getTrackSelections(this.playlist);
   }
 }
 
@@ -1508,15 +1516,20 @@ let videoState = {
   playbackRate: 1.0
 };
 
-function getCurrentTrackSelections() {
-  if (PLAYLIST.videos.length > 0 && PLAYLIST.currentIndex >= 0 && PLAYLIST.currentIndex < PLAYLIST.videos.length) {
-    const currentVideo = PLAYLIST.videos[PLAYLIST.currentIndex];
+// Shared track selection logic (used by both Room class and legacy mode)
+function _getTrackSelections(playlist) {
+  if (playlist.videos.length > 0 && playlist.currentIndex >= 0 && playlist.currentIndex < playlist.videos.length) {
+    const currentVideo = playlist.videos[playlist.currentIndex];
     return {
       audioTrack: currentVideo.selectedAudioTrack !== undefined ? currentVideo.selectedAudioTrack : 0,
       subtitleTrack: currentVideo.selectedSubtitleTrack !== undefined ? currentVideo.selectedSubtitleTrack : -1
     };
   }
   return { audioTrack: 0, subtitleTrack: -1 };
+}
+
+function getCurrentTrackSelections() {
+  return _getTrackSelections(PLAYLIST);
 }
 
 // Get audio/subtitle tracks for a file
@@ -1586,22 +1599,17 @@ async function getTracksForFile(filename) {
             default: isDefault
           };
 
-          // Note: node-av 5.x CodecParameters uses getters (codecType, codecId)
-          if (stream.codecpar?.codecType === 1 || (stream.codecpar?.type === 'audio')) { // 1 = AVMEDIA_TYPE_AUDIO
+          // Detect stream type (unified check to avoid double-push)
+          const isAudio = stream.codecpar?.codecType === 1 || stream.codecpar?.type === 'audio' || stream.type === 'audio';
+          const isSubtitle = stream.codecpar?.codecType === 3 || stream.codecpar?.type === 'subtitle' || stream.type === 'subtitle';
+
+          if (isAudio) {
             tracks.audio.push(trackInfo);
-          } else if (stream.codecpar?.type === 'subtitle' || stream.codecpar?.codecType === 3) { // 3 = SUBTITLE
-            // User requested to HIDE internal subtitles to force use of extracted sidecars.
-            // tracks.subtitles.push(trackInfo); 
+          } else if (isSubtitle) {
+            // Internal subtitles disabled — use extracted sidecars instead
+            // tracks.subtitles.push(trackInfo);
           }
-
-          // Fallback: check codec name/type strings if available directly on stream
-          if (stream.type === 'audio') tracks.audio.push(trackInfo);
-          // if (stream.type === 'subtitle') tracks.subtitles.push(trackInfo); // Internal subtitles disabled
         }
-
-        // Remove duplicates if my logic matched twice (paranoid check)
-        tracks.audio = [...new Set(tracks.audio.map(JSON.stringify))].map(JSON.parse);
-        tracks.subtitles = [...new Set(tracks.subtitles.map(JSON.stringify))].map(JSON.parse);
 
         return tracks;
 
@@ -1845,6 +1853,45 @@ app.get('/api/files', filesRateLimiter, async (req, res) => {
   res.json(files);
 });
 
+// API to get orphan subtitles (files in TRACKS_DIR not in any manifest)
+// Note: Protected implicitly by the admin panel's FFmpeg password gate (UI-level)
+app.get('/api/tracks/orphans', (req, res) => {
+  // 1. Get all files in TRACKS_DIR
+  let allTracks = [];
+  try {
+    if (fs.existsSync(TRACKS_DIR)) {
+      allTracks = fs.readdirSync(TRACKS_DIR).filter(f => f.endsWith('.vtt') || f.endsWith('.srt') || f.endsWith('.ass'));
+    }
+  } catch (e) { console.error('Error reading TRACKS_DIR:', e); }
+
+  // 2. Get all used tracks from manifests
+  const usedTracks = new Set();
+  try {
+    if (fs.existsSync(TRACKS_MANIFEST_DIR)) {
+      const manifests = fs.readdirSync(TRACKS_MANIFEST_DIR).filter(f => f.endsWith('.json'));
+      manifests.forEach(m => {
+        try {
+          const content = fs.readFileSync(path.join(TRACKS_MANIFEST_DIR, m), 'utf8');
+          const json = JSON.parse(content);
+          if (json.externalTracks && Array.isArray(json.externalTracks)) {
+            json.externalTracks.forEach(t => {
+              if (t.path) usedTracks.add(t.path);
+            });
+          }
+        } catch (err) { }
+      });
+    }
+  } catch (e) { console.error('Error reading manifests:', e); }
+
+  // 3. Filter orphans
+  const orphans = allTracks.filter(f => !usedTracks.has(f)).map(f => ({
+    filename: f,
+    type: path.extname(f).replace('.', '')
+  }));
+
+  res.json({ success: true, orphans });
+});
+
 app.get('/api/tracks/:filename', tracksRateLimiter, async (req, res) => {
   const filename = req.params.filename;
 
@@ -1917,7 +1964,7 @@ async function getVideoDuration(videoPath) {
   }
 }
 
-// Generate thumbnail from video using FFmpeg (720p, random frame from first third)
+// Generate thumbnail from video (720p default, random frame from first third)
 app.get('/api/thumbnail/:filename', thumbnailRateLimiter, async (req, res) => {
   const filename = req.params.filename;
 
@@ -1952,257 +1999,32 @@ app.get('/api/thumbnail/:filename', thumbnailRateLimiter, async (req, res) => {
     return res.status(404).json({ error: 'File not found' });
   }
 
-  // Check if this is an audio file (MP3, etc.) - extract embedded cover art
+  // Audio check
   const audioExtensions = ['.mp3', '.flac', '.m4a', '.aac', '.ogg', '.wav'];
   const isAudioFile = audioExtensions.some(ext => safeFilename.toLowerCase().endsWith(ext));
 
   if (isAudioFile) {
-    console.log(`${colors.cyan}Extracting cover art from audio file: ${safeFilename}${colors.reset}`);
-
-
-    // Extract embedded cover art from audio file using node-av
-    try {
-      if (!Demuxer) throw new Error('node-av Demuxer not available');
-
-      console.log(`${colors.cyan}Processing audio cover art with node-av for: ${safeFilename}${colors.reset}`);
-
-      const input = await Demuxer.open(videoPath);
-      let coverStream = null;
-
-      // 1. Look for stream with AV_DISPOSITION_ATTACHED_PIC (0x0400 = 1024)
-      for (const stream of input.streams) {
-        if (stream.disposition & 1024) {
-          coverStream = stream;
-          break;
-        }
-      }
-
-      // 2. If not found, look for a video stream (generic cover art in some containers)
-      if (!coverStream) {
-        for (const stream of input.streams) {
-          // Access via codecType getter (node-av 5.x) or try strict check
-          if (stream.codecpar && (stream.codecpar.codecType === 0 || stream.codecpar.type === 'video')) { // 0 = AVMEDIA_TYPE_VIDEO
-            coverStream = stream;
-            break;
-          }
-        }
-      }
-
-      if (coverStream) {
-        console.log(`${colors.cyan}Found cover art stream #${coverStream.index}. Extracting...${colors.reset}`);
-
-        // Read first packet from this stream
-        let found = false;
-        // Iterate packets specifically for this stream
-        for await (const packet of input.packets(coverStream.index)) {
-          if (packet.streamIndex === coverStream.index) {
-            // Write packet data to file
-            if (packet.data) {
-              fs.writeFileSync(thumbnailPath, packet.data);
-              console.log(`${colors.green}Extracted cover art to: ${thumbnailPath}${colors.reset}`);
-              res.json({ thumbnail: `/thumbnails/${thumbnailFilename}`, isAudio: true });
-              found = true;
-            }
-            packet.free();
-            break; // Only need one packet
-          }
-          packet.free();
-        }
-        if (!found) {
-          console.log(`${colors.yellow}Stream found but no packets extracted.${colors.reset}`);
-          res.json({ thumbnail: null, isAudio: true });
-        }
-      } else {
-        console.log(`${colors.yellow}No embedded cover art stream found.${colors.reset}`);
-        res.json({ thumbnail: null, isAudio: true });
-      }
-
-      await input.close();
-
-    } catch (err) {
-      console.error(`${colors.red}Error extracting audio cover art: ${err.message}${colors.reset}`);
-      // Fallback or just return null
-      res.json({ thumbnail: null, isAudio: true });
+    if (await generateAudioCoverArt(videoPath, thumbnailPath)) {
+      return res.json({ thumbnail: `/thumbnails/${thumbnailFilename}`, isAudio: true });
     }
+    return res.json({ thumbnail: null, isAudio: true });
   }
 
-  // Check if node-av is available
-  if (path.extname(videoPath).toLowerCase() === '.mp4' || path.extname(videoPath).toLowerCase() === '.mkv' || path.extname(videoPath).toLowerCase() === '.avi') { // Basic check, Demuxer handles more
-    if (Demuxer && Decoder && Encoder && FilterAPI && Muxer) {
-      try {
-        console.log(`${colors.cyan}Processing thumbnail with node-av for: ${safeFilename}${colors.reset}`);
-
-        // Logic: Reuse master thumbnail (720p) if available and we want a smaller size
-        // This ensures the blurred background matches the main thumbnail
-        const masterFilename = safeFilename.replace(/\.[^.]+$/, '.jpg');
-        const masterPath = path.join(THUMBNAIL_DIR, masterFilename);
-        let inputPath = videoPath;
-        let isImageInput = false;
-
-        // If requesting non-standard size and master exists, use master as source
-        if (width !== 720 && fs.existsSync(masterPath)) {
-          inputPath = masterPath;
-          isImageInput = true;
-          console.log(`${colors.cyan}Downscaling existing master thumbnail for ${safeFilename}${colors.reset}`);
-        }
-
-        // 1. Open Input
-        const input = await Demuxer.open(inputPath);
-        const videoStream = input.video();
-
-        if (!videoStream) {
-          throw new Error('No video stream found');
-        }
-
-        if (!isImageInput) {
-          const duration = input.duration > 0 ? input.duration : (await getVideoDuration(videoPath));
-          // Deterministic seek based on filename hash to ensure consistency
-          const seed = safeFilename.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-          const seekPct = Math.max(0.01, (seed % 20) / 100); // 1% to 19%
-          const seekTime = Math.max(1, Math.floor(duration * seekPct));
-
-          console.log(`${colors.cyan}Seeking deterministically to ${seekTime}s (duration: ${duration}s)${colors.reset}`);
-          await input.seek(seekTime);
-        }
-
-        // 2. Setup Decoder
-        const decoder = await Decoder.create(videoStream);
-
-        // 3. Setup Output Muxer (with explicit update option to allow single image write)
-        const output = await Muxer.open(thumbnailPath, {
-          format: 'image2',
-          update: '1' // Critical for single image writing in recent ffmpeg/node-av
-        });
-
-        const packetGen = input.packets(videoStream.index);
-        const frameGen = decoder.frames(packetGen);
-
-        let gotFrame = false;
-        let encoder = null;
-        let outStreamIdx = -1;
-        let filter = null;
-
-        for await (const frame of frameGen) {
-          // If seeking, decoder handles getting to the right frame logic roughly, but we take first emitted
-          if (!gotFrame) {
-            if (!filter) {
-              // Using yuvj420p for MJPEG full range consistency
-              filter = await FilterAPI.create(`scale=-1:${width},format=yuvj420p`, {
-                width: frame.width,
-                height: frame.height,
-                pixelFormat: frame.format,
-                timeBase: videoStream.timeBase
-              });
-            }
-
-            const filteredFrames = await filter.processAll(frame);
-
-            for (const filteredFrame of filteredFrames) {
-              if (!encoder) {
-                const { FF_ENCODER_MJPEG } = require('node-av/constants');
-                encoder = await Encoder.create(FF_ENCODER_MJPEG, {
-                  timeBase: { num: 1, den: 1 },
-                  width: filteredFrame.width,
-                  height: filteredFrame.height,
-                  pixelFormat: filteredFrame.format
-                });
-                outStreamIdx = output.addStream(encoder);
-              }
-              const packets = await encoder.encodeAll(filteredFrame);
-              for (const pkt of packets) {
-                await output.writePacket(pkt, outStreamIdx);
-              }
-            }
-
-            // Flush encoder
-            if (encoder) {
-              for await (const pkt of encoder.flushPackets()) {
-                await output.writePacket(pkt, outStreamIdx);
-              }
-            }
-
-            gotFrame = true;
-            break; // Done after one frame
-          }
-        }
-
-        if (input.close) await input.close();
-
-        if (gotFrame) {
-          console.log(`${colors.green}Generated thumbnail via node-av for: ${safeFilename}${colors.reset}`);
-          return res.json({ thumbnail: `/thumbnails/${thumbnailFilename}` });
-        } else {
-          throw new Error('No frame extracted');
-        }
-
-      } catch (avError) {
-        console.error(`${colors.yellow}node-av thumbnail failed, falling back to system ffmpeg:${colors.reset}`, avError);
-        // Fall through to execFile below
-      }
-    }
+  // Video - Try node-av first
+  // Only attempt node-av for compatible containers if needed, but Demuxer covers most
+  const nodeAvSuccess = await generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFilename);
+  if (nodeAvSuccess) {
+    return res.json({ thumbnail: `/thumbnails/${thumbnailFilename}` });
   }
 
+  // Video - Fallback to FFmpeg CLI
   try {
-    // Get video duration
-    const duration = await getVideoDuration(videoPath);
-
-    // Calculate random position in first third of video (minimum 1 second)
-    const firstThird = Math.max(duration / 3, 1);
-    const randomTime = Math.random() * firstThird;
-    const seekTime = Math.max(1, Math.floor(randomTime)); // At least 1 second in
-
-    console.log(`${colors.cyan}Generating 720p thumbnail for ${safeFilename} at ${seekTime}s (duration: ${duration}s)${colors.reset}`);
-
-    // Generate 720p thumbnail (-vf scale=-1:720 maintains aspect ratio with 720 height)
-    execFile('ffmpeg', [
-      '-ss', String(seekTime),
-      '-i', videoPath,
-      '-vframes', '1',
-      '-vf', 'scale=-1:720',
-      '-q:v', '2',
-      '-y',
-      thumbnailPath
-    ], (error) => {
-      if (error) {
-        console.error('FFmpeg thumbnail error:', error.message);
-        // Fallback to 1 second
-        execFile('ffmpeg', [
-          '-ss', '1',
-          '-i', videoPath,
-          '-vframes', '1',
-          '-vf', 'scale=-1:720',
-          '-q:v', '2',
-          '-y',
-          thumbnailPath
-        ], (err2) => {
-          if (err2) {
-            console.error('FFmpeg fallback error:', err2.message);
-            return res.status(500).json({ error: 'Failed to generate thumbnail' });
-          }
-          res.json({ thumbnail: `/thumbnails/${thumbnailFilename}` });
-        });
-        return;
-      }
-      console.log(`${colors.green}Generated 720p thumbnail for: ${safeFilename}${colors.reset}`);
-      res.json({ thumbnail: `/thumbnails/${thumbnailFilename}` });
-    });
-  } catch (error) {
-    console.error('Error getting video duration:', error);
-    // Fallback: just try at 10 seconds
-    execFile('ffmpeg', [
-      '-ss', '10',
-      '-i', videoPath,
-      '-vframes', '1',
-      '-vf', 'scale=-1:720',
-      '-q:v', '2',
-      '-y',
-      thumbnailPath
-    ], (err) => {
-      if (err) {
-        return res.status(500).json({ error: 'Failed to generate thumbnail' });
-      }
-      res.json({ thumbnail: `/thumbnails/${thumbnailFilename}` });
-    });
+    console.log(`${colors.yellow}Falling back to FFmpeg CLI for ${safeFilename}${colors.reset}`);
+    await generateThumbnailFfmpeg(videoPath, thumbnailPath, width, safeFilename);
+    return res.json({ thumbnail: `/thumbnails/${thumbnailFilename}` });
+  } catch (e) {
+    console.error('Thumbnail generation failed:', e);
+    return res.status(500).json({ error: 'Failed to generate thumbnail' });
   }
 });
 
@@ -2695,15 +2517,6 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Grace Period Check: Ignore control events from new connections for 5 seconds
-    // This prevents "join-reset" bugs where a loading client broadcasts 0:00
-    if (socket.joinTime && Date.now() - socket.joinTime < 5000) {
-      // Allow minor syncs or non-state-changing events if needed, but blocking major control is safer
-      // We log it so we know it happened
-      console.log(`${colors.yellow}Ignored control event during grace period from ${socket.id}${colors.reset}`);
-      return;
-    }
-
     // Validate time for seek action
     if (data.action === 'seek' && !validateCurrentTime(data.time)) {
       console.log(`${colors.yellow}Invalid seek time: ${data.time}${colors.reset}`);
@@ -2827,6 +2640,238 @@ io.on('connection', (socket) => {
       };
       io.emit('sync', videoState);
       console.log('Broadcasting sync to all clients:', videoState);
+    }
+  });
+
+  // ==================== Subtitle Tools Handlers ====================
+
+  // --- Shared Helpers ---
+
+  // Read source manifest and resolve a track by its index (handles the 1000+ offset)
+  function readSourceTrack(sourceVideo, trackIndex) {
+    const manifestName = path.basename(sourceVideo) + '.json';
+    const manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestName);
+
+    if (!fs.existsSync(manifestPath)) {
+      return { error: 'Source tracks manifest not found' };
+    }
+
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    if (!manifest.externalTracks || !Array.isArray(manifest.externalTracks)) {
+      return { error: 'No external tracks found in source' };
+    }
+
+    const arrayIndex = trackIndex >= 1000 ? trackIndex - 1000 : trackIndex;
+    if (arrayIndex < 0 || arrayIndex >= manifest.externalTracks.length) {
+      return { error: 'Track not found (invalid index)' };
+    }
+
+    return { manifest, manifestPath, arrayIndex, track: manifest.externalTracks[arrayIndex] };
+  }
+
+  // Load (or create) a target manifest, find the next safe track index, and return naming helpers
+  function prepareTargetManifest(targetVideo) {
+    const manifestName = path.basename(targetVideo) + '.json';
+    const manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestName);
+    let manifest = { externalTracks: [] };
+
+    if (fs.existsSync(manifestPath)) {
+      try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch (e) { }
+    } 
+    if (!manifest.externalTracks) manifest.externalTracks = [];
+
+    // Find next safe track index from existing entries
+    let maxIndex = -1;
+    manifest.externalTracks.forEach(t => {
+      if (t.path) {
+        const match = t.path.match(/_track(\d+)_/);
+        if (match) {
+          const idx = parseInt(match[1]);
+          if (idx > maxIndex) maxIndex = idx;
+        }
+      }
+    });
+
+    return {
+      manifest,
+      manifestPath,
+      nextIndex: maxIndex + 1,
+      safeBaseName: path.basename(targetVideo).replace(/\.[^/.]+$/, '')
+    };
+  }
+
+  // Build a normalized track entry for writing to manifests
+  function buildTrackEntry(trackPath, opts = {}) {
+    return {
+      type: opts.type || 'subtitle',
+      lang: opts.lang || 'und',
+      title: opts.title || 'Track',
+      isExternal: true,
+      path: trackPath,
+      url: `/tracks/${trackPath}`
+    };
+  }
+
+  // --- Handlers ---
+
+  // Rebind Subtitle (Move)
+  socket.on('rebind-subtitle', async (data, callback) => {
+    if (!data || !data.sourceVideo || !data.targetVideo || typeof data.trackIndex !== 'number') {
+      return callback && callback({ success: false, error: 'Invalid parameters' });
+    }
+    if (!isSocketAdmin(socket.id)) {
+      return callback && callback({ success: false, error: 'Unauthorized' });
+    }
+
+    try {
+      const src = readSourceTrack(data.sourceVideo, data.trackIndex);
+      if (src.error) return callback && callback({ success: false, error: src.error });
+
+      const tgt = prepareTargetManifest(data.targetVideo);
+
+      // Resolve file on disk
+      let absoluteOldPath = path.join(TRACKS_DIR, src.track.path);
+      if (!fs.existsSync(absoluteOldPath)) {
+        if (path.isAbsolute(src.track.path) && fs.existsSync(src.track.path)) {
+          absoluteOldPath = src.track.path;
+        } else {
+          return callback && callback({ success: false, error: 'Subtitle file not found on disk' });
+        }
+      }
+
+      // Rename file
+      const ext = path.extname(absoluteOldPath);
+      const lang = src.track.lang || 'und';
+      const title = (src.track.title || 'Track').replace(/[^a-zA-Z0-9]/g, '');
+      const newFileName = `${tgt.safeBaseName}_track${tgt.nextIndex}_${lang}_${title}${ext}`;
+      const absoluteNewPath = path.join(TRACKS_DIR, newFileName);
+
+      fs.renameSync(absoluteOldPath, absoluteNewPath);
+
+      // Update target manifest
+      tgt.manifest.externalTracks.push(buildTrackEntry(newFileName, {
+        type: src.track.type || 'subtitle', lang, title: src.track.title || 'Track'
+      }));
+      fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
+
+      // Remove from source manifest
+      src.manifest.externalTracks.splice(src.arrayIndex, 1);
+      fs.writeFileSync(src.manifestPath, JSON.stringify(src.manifest, null, 2));
+
+      console.log(`[Subtitle] Rebound ${newFileName} from ${data.sourceVideo} to ${data.targetVideo}`);
+      if (callback) callback({ success: true });
+
+    } catch (e) {
+      console.error('Rebind Error:', e);
+      if (callback) callback({ success: false, error: e.message });
+    }
+  });
+
+  // Share Subtitle (Link)
+  socket.on('share-subtitle', async (data, callback) => {
+    if (!data || !data.sourceVideo || !data.targetVideo || typeof data.trackIndex !== 'number') {
+      return callback && callback({ success: false, error: 'Invalid parameters' });
+    }
+    if (!isSocketAdmin(socket.id)) {
+      return callback && callback({ success: false, error: 'Unauthorized' });
+    }
+
+    try {
+      const src = readSourceTrack(data.sourceVideo, data.trackIndex);
+      if (src.error) return callback && callback({ success: false, error: src.error });
+
+      const tgt = prepareTargetManifest(data.targetVideo);
+
+      // Check duplicate
+      if (tgt.manifest.externalTracks.some(t => t.path === src.track.path)) {
+        return callback && callback({ success: false, error: 'Subtitle is already linked to target' });
+      }
+
+      // Link (same file, just add to target manifest)
+      tgt.manifest.externalTracks.push(buildTrackEntry(src.track.path, {
+        type: src.track.type || 'subtitle',
+        lang: src.track.lang || 'und',
+        title: src.track.title || 'Track'
+      }));
+      fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
+
+      console.log(`[Subtitle] Shared ${src.track.path} from ${data.sourceVideo} to ${data.targetVideo}`);
+      if (callback) callback({ success: true });
+
+    } catch (e) {
+      console.error('Share Error:', e);
+      if (callback) callback({ success: false, error: e.message });
+    }
+  });
+
+  // Bind Orphan Subtitle (with optional SRT conversion)
+  socket.on('bind-orphan', async (data, callback) => {
+    if (!data || !data.orphanFile || !data.targetVideo) {
+      return callback && callback({ success: false, error: 'Invalid parameters' });
+    }
+    if (!isSocketAdmin(socket.id)) {
+      return callback && callback({ success: false, error: 'Unauthorized' });
+    }
+
+    const orphanFile = data.orphanFile;
+    const sourcePath = path.join(TRACKS_DIR, orphanFile);
+    if (!fs.existsSync(sourcePath)) {
+      return callback && callback({ success: false, error: 'Orphan file not found' });
+    }
+
+    try {
+      const tgt = prepareTargetManifest(data.targetVideo);
+
+      let finalSourcePath = sourcePath;
+      let ext = path.extname(sourcePath).toLowerCase();
+      let wasConverted = false;
+
+      // SRT → VTT conversion
+      if (ext === '.srt') {
+        if (ffmpegPath) {
+          const tempVttName = `${path.basename(orphanFile, '.srt')}_converted.vtt`;
+          const tempVttPath = path.join(TRACKS_DIR, tempVttName);
+          const bin = ffmpegPath();
+          try {
+            await execFileAsync(bin, ['-y', '-i', sourcePath, tempVttPath]);
+            finalSourcePath = tempVttPath;
+            ext = '.vtt';
+            wasConverted = true;
+            console.log(`[Subtitle] Converted SRT to VTT: ${tempVttName}`);
+          } catch (err) {
+            console.error('FFmpeg conversion failed:', err);
+            return callback && callback({ success: false, error: 'SRT conversion failed' });
+          }
+        } else {
+          return callback && callback({ success: false, error: 'FFmpeg not available for conversion' });
+        }
+      }
+
+      // Rename to standard name
+      const newFileName = `${tgt.safeBaseName}_track${tgt.nextIndex}_und_Orphan${ext}`;
+      const finalPath = path.join(TRACKS_DIR, newFileName);
+      fs.renameSync(finalSourcePath, finalPath);
+
+      // Clean up original SRT if converted
+      if (wasConverted && fs.existsSync(sourcePath)) {
+        try {
+          fs.unlinkSync(sourcePath);
+          console.log(`[Subtitle] Deleted original SRT: ${orphanFile}`);
+        } catch (e) { console.warn('Failed to delete original SRT', e); }
+      }
+
+      // Update manifest with normalized entry
+      tgt.manifest.externalTracks.push(buildTrackEntry(newFileName, {
+        type: 'subtitle', lang: 'und', title: 'Orphan'
+      }));
+      fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
+
+      console.log(`[Subtitle] Bound ${newFileName} to ${data.targetVideo}`);
+      if (callback) callback({ success: true });
+
+    } catch (err) {
+      console.error('Error binding orphan:', err);
+      if (callback) callback({ success: false, error: err.message });
     }
   });
 
@@ -3997,10 +4042,345 @@ app.get('/api/vpn-check', (req, res) => {
   res.json({ detected: detectedVpnProxy });
 });
 
+// Post-process generated VTT file to remove duplicate cues and ASS artifacts
+async function cleanVttFile(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return;
+
+    const content = await fs.promises.readFile(filePath, 'utf8');
+    const lines = content.split(/\r?\n/);
+
+    // Simple VTT parser to extract clean cues
+    const cleanLines = [];
+    if (lines.length > 0 && lines[0].startsWith('WEBVTT')) {
+      cleanLines.push(lines[0]);
+      cleanLines.push('');
+    }
+
+    let i = 0;
+    let lastCue = null; // { start, end, text }
+
+    while (i < lines.length) {
+      let line = lines[i];
+
+      // Check for timestamp line
+      if (line.includes('-->')) {
+        const parts = line.split(' --> ');
+        if (parts.length >= 2) {
+          const start = parts[0].trim();
+          const end = parts[1].trim();
+
+          // Collect payload (until empty line)
+          let payload = [];
+          let j = i + 1;
+          while (j < lines.length && lines[j].trim() !== '') {
+            const txt = lines[j].trim();
+            // Filter ASS drawing commands (e.g. m 10 20 ...)
+            if (!/^m\s+-?\d+/.test(txt)) {
+              payload.push(lines[j]);
+            }
+            j++;
+          }
+
+          // If payload is empty (was only drawings), skip cue entirely
+          if (payload.length > 0) {
+            const payloadText = payload.join('\n');
+
+            // Deduplicate logic: Skip this cue if identical to last one
+            let isDuplicate = false;
+            if (lastCue && lastCue.start === start && lastCue.end === end && lastCue.text === payloadText) {
+              isDuplicate = true;
+            }
+
+            if (!isDuplicate) {
+              cleanLines.push(`${start} --> ${end}`);
+              cleanLines.push(...payload);
+              cleanLines.push(''); // Separator
+
+              lastCue = { start, end, text: payloadText };
+            }
+          }
+
+          i = j; // Skip to next block
+          continue;
+        }
+      }
+      i++;
+    }
+
+    const newContent = cleanLines.join('\n');
+    await fs.promises.writeFile(filePath, newContent, 'utf8');
+    console.log(`[VTT-Clean] Processed ${path.basename(filePath)} (removed artifacts/duplicates)`);
+
+  } catch (e) {
+    console.error(`[VTT-Clean] Error processing ${path.basename(filePath)}:`, e);
+  }
+}
+
+// --- Thumbnail Helper Functions ---
+
+async function generateAudioCoverArt(videoPath, thumbnailPath) {
+  try {
+    if (!Demuxer) throw new Error('node-av Demuxer not available');
+
+    console.log(`${colors.cyan}Processing audio cover art with node-av for: ${path.basename(videoPath)}${colors.reset}`);
+    const input = await Demuxer.open(videoPath);
+    let coverStream = null;
+
+    // 1. Look for stream with AV_DISPOSITION_ATTACHED_PIC (0x0400 = 1024)
+    for (const stream of input.streams) {
+      if (stream.disposition & 1024) {
+        coverStream = stream;
+        break;
+      }
+    }
+
+    // 2. If not found, look for video stream
+    if (!coverStream) {
+      for (const stream of input.streams) {
+        if (stream.codecpar && (stream.codecpar.codecType === 0 || stream.codecpar.type === 'video')) {
+          coverStream = stream;
+          break;
+        }
+      }
+    }
+
+    if (coverStream) {
+      console.log(`${colors.cyan}Found cover art stream #${coverStream.index}. Extracting...${colors.reset}`);
+      let found = false;
+      for await (const packet of input.packets(coverStream.index)) {
+        if (packet.streamIndex === coverStream.index) {
+          if (packet.data) {
+            fs.writeFileSync(thumbnailPath, packet.data);
+            console.log(`${colors.green}Extracted cover art to: ${thumbnailPath}${colors.reset}`);
+            found = true;
+          }
+          packet.free();
+          break;
+        }
+        packet.free();
+      }
+      await input.close();
+      return found;
+    }
+
+    await input.close();
+    return false;
+  } catch (err) {
+    console.error(`${colors.red}Error extracting audio cover art: ${err.message}${colors.reset}`);
+    return false;
+  }
+}
+
+async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFilename) {
+  if (!Demuxer || !Decoder || !Encoder || !FilterAPI || !Muxer) return false;
+
+  try {
+    console.log(`${colors.cyan}Processing thumbnail with node-av for: ${safeFilename}${colors.reset}`);
+
+    // Check for master thumbnail to reuse
+    const masterFilename = safeFilename.replace(/\.[^.]+$/, '.jpg');
+    const masterPath = path.join(THUMBNAIL_DIR, masterFilename);
+    let inputPath = videoPath;
+    let isImageInput = false;
+
+    if (width !== 720 && fs.existsSync(masterPath)) {
+      inputPath = masterPath;
+      isImageInput = true;
+      console.log(`${colors.cyan}Downscaling existing master thumbnail for ${safeFilename}${colors.reset}`);
+    }
+
+    const input = await Demuxer.open(inputPath);
+    const videoStream = input.video();
+    if (!videoStream) throw new Error('No video stream found');
+
+    if (!isImageInput) {
+      const duration = input.duration > 0 ? input.duration : (await getVideoDuration(videoPath));
+      const seed = safeFilename.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+      const seekPct = Math.max(0.01, (seed % 20) / 100);
+      const seekTime = Math.max(1, Math.floor(duration * seekPct));
+      console.log(`${colors.cyan}Seeking deterministically to ${seekTime}s (duration: ${duration}s)${colors.reset}`);
+      await input.seek(seekTime);
+    }
+
+    const decoder = await Decoder.create(videoStream);
+    const output = await Muxer.open(thumbnailPath, { format: 'image2', update: '1' });
+
+    const packetGen = input.packets(videoStream.index);
+    const frameGen = decoder.frames(packetGen);
+
+    let gotFrame = false;
+    let encoder = null;
+    let outStreamIdx = -1;
+    let filter = null;
+
+    for await (const frame of frameGen) {
+      if (!gotFrame) {
+        if (!filter) {
+          filter = await FilterAPI.create(`scale=-1:${width},format=yuvj420p`, {
+            width: frame.width,
+            height: frame.height,
+            pixelFormat: frame.format,
+            timeBase: videoStream.timeBase
+          });
+        }
+
+        const filteredFrames = await filter.processAll(frame);
+        for (const filteredFrame of filteredFrames) {
+          if (!encoder) {
+            const { FF_ENCODER_MJPEG } = require('node-av/constants');
+            encoder = await Encoder.create(FF_ENCODER_MJPEG, {
+              timeBase: { num: 1, den: 1 },
+              width: filteredFrame.width,
+              height: filteredFrame.height,
+              pixelFormat: filteredFrame.format
+            });
+            outStreamIdx = output.addStream(encoder);
+          }
+          const packets = await encoder.encodeAll(filteredFrame);
+          for (const pkt of packets) await output.writePacket(pkt, outStreamIdx);
+        }
+
+        if (encoder) {
+          for await (const pkt of encoder.flushPackets()) await output.writePacket(pkt, outStreamIdx);
+        }
+        gotFrame = true;
+        break;
+      }
+    }
+
+    if (input.close) await input.close();
+
+    if (gotFrame) {
+      console.log(`${colors.green}Generated thumbnail via node-av for: ${safeFilename}${colors.reset}`);
+      return true;
+    }
+    return false;
+
+  } catch (avError) {
+    console.error(`${colors.yellow}node-av thumbnail failed:${colors.reset}`, avError.message);
+    return false;
+  }
+}
+
+async function generateThumbnailFfmpeg(videoPath, thumbnailPath, width, safeFilename) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const duration = await getVideoDuration(videoPath);
+      const firstThird = Math.max(duration / 3, 1);
+      const randomTime = Math.random() * firstThird;
+      const seekTime = Math.max(1, Math.floor(randomTime));
+
+      console.log(`${colors.cyan}Generating ${width}px thumbnail for ${safeFilename} at ${seekTime}s${colors.reset}`);
+
+      execFile('ffmpeg', [
+        '-ss', String(seekTime),
+        '-i', videoPath,
+        '-vframes', '1',
+        '-vf', `scale=-1:${width}`,
+        '-q:v', '2',
+        '-y',
+        thumbnailPath
+      ], (error) => {
+        if (error) {
+          // Fallback to 1s
+          execFile('ffmpeg', [
+            '-ss', '1',
+            '-i', videoPath,
+            '-vframes', '1',
+            '-vf', `scale=-1:${width}`,
+            '-q:v', '2',
+            '-y',
+            thumbnailPath
+          ], (err2) => {
+            if (err2) return reject(err2);
+            console.log(`${colors.green}Generated thumbnail (fallback) for: ${safeFilename}${colors.reset}`);
+            resolve();
+          });
+        } else {
+          console.log(`${colors.green}Generated thumbnail for: ${safeFilename}${colors.reset}`);
+          resolve();
+        }
+      });
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+// Function to detect available FFmpeg encoders
+function detectEncoders() {
+  const memoryPath = path.join(MEMORY_DIR, 'memory.json');
+  let memory = {};
+
+  if (fs.existsSync(memoryPath)) {
+    try {
+      memory = JSON.parse(fs.readFileSync(memoryPath, 'utf8'));
+    } catch (e) { console.error('Error reading memory.json:', e); }
+  }
+
+  // Check if encoders already detected
+  if (memory.encoders && Array.isArray(memory.encoders) && memory.encoders.length > 0) {
+    return;
+  }
+
+  // Use bundled ffmpeg from node-av via official API
+  let ffmpegPath = 'ffmpeg';
+  try {
+    // Use require to get the helper (returns function that returns path)
+    const { ffmpegPath: getFfmpegPath } = require('node-av/ffmpeg');
+    const bundledPath = getFfmpegPath();
+    if (bundledPath) {
+      ffmpegPath = bundledPath;
+    }
+  } catch (e) {
+    console.warn('[FFmpeg] Could not load node-av/ffmpeg helper:', e.message);
+    // Fallback to manual check if API fails
+    const bundledManual = path.join(__dirname, 'node_modules', 'node-av', 'binary', 'ffmpeg.exe');
+    if (fs.existsSync(bundledManual)) {
+      ffmpegPath = bundledManual;
+    }
+  }
+
+  exec(`"${ffmpegPath}" -encoders`, (error, stdout, stderr) => {
+    if (error) {
+      console.error('[FFmpeg] Failed to detect encoders:', error);
+      return;
+    }
+
+    const encoders = [];
+    const lines = stdout.split('\n');
+    const regex = /^\s*([V A S])[A-Z.]+\s+([a-zA-Z0-9_-]+)\s+(.*)$/;
+
+    lines.forEach(line => {
+      const match = line.match(regex);
+      if (match) {
+        encoders.push({
+          type: match[1] === 'V' ? 'video' : (match[1] === 'A' ? 'audio' : 'subtitle'),
+          name: match[2],
+          description: match[3].trim()
+        });
+      }
+    });
+
+    memory.encoders = encoders;
+
+    // Save to memory.json
+    try {
+      if (!fs.existsSync(MEMORY_DIR)) fs.mkdirSync(MEMORY_DIR, { recursive: true });
+      fs.writeFileSync(memoryPath, JSON.stringify(memory, null, 2));
+    } catch (e) {
+      console.error('[FFmpeg] Failed to save encoders to memory.json:', e);
+    }
+  });
+}
+
 server.listen(PORT, () => {
-  console.log(`${colors.blue}Server running at http://${LOCAL_IP}:${PORT}${colors.reset}`);
-  console.log(`${colors.blue}Admin panel available at http://${LOCAL_IP}:${PORT}/admin${colors.reset}`);
+  const protocol = (config.use_https === 'true' || PORT === 443 || PORT === 8443) ? 'https' : 'http';
+  console.log(`${colors.blue}Server running at ${protocol}://${LOCAL_IP}:${PORT}${colors.reset}`);
+  console.log(`${colors.blue}Admin panel available at ${protocol}://${LOCAL_IP}:${PORT}/admin${colors.reset}`);
 
   // Check for VPN/proxy software after server starts
   checkForVpnProxy();
+  detectEncoders();
 });

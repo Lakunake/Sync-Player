@@ -80,7 +80,7 @@ function handleVideoEnded() {
 }
 
 // Load external content (Vimeo, Twitch, etc.)
-function loadExternalContent(platform, id, url) {
+function loadExternalContent(platform, id, url, startTime = 0) {
   currentPlatform = platform;
   hideAllPlayers();
 
@@ -90,7 +90,7 @@ function loadExternalContent(platform, id, url) {
     // YouTube specific logic is handled by onYouTubeIframeAPIReady and socket play event
     // But we might need to trigger load if it's already ready
     if (ytPlayer && ytPlayerReady && id) {
-      ytPlayer.loadVideoById(id);
+      ytPlayer.loadVideoById(id, startTime);
     }
     return;
   }
@@ -110,8 +110,14 @@ function loadExternalContent(platform, id, url) {
             height: '100%'
           });
           vimeoPlayer.on('ended', handleVideoEnded);
+          vimeoPlayer.on('loaded', () => {
+            if (startTime > 0) vimeoPlayer.setCurrentTime(startTime);
+          });
         } else if (vimeoPlayer) {
-          vimeoPlayer.loadVideo(id).then(() => vimeoPlayer.play()).catch(e => console.error('Vimeo play error:', e));
+          vimeoPlayer.loadVideo(id).then(() => {
+            if (startTime > 0) vimeoPlayer.setCurrentTime(startTime);
+            vimeoPlayer.play();
+          }).catch(e => console.error('Vimeo play error:', e));
         }
         break;
 
@@ -123,11 +129,13 @@ function loadExternalContent(platform, id, url) {
             width: '100%',
             height: '100%',
             layout: 'video',
-            autoplay: true
+            autoplay: true,
+            // Twitch embed doesn't support start time easily in options for VODs in this way
           };
           // Determine if ID is channel or video
           if (id.match(/^\d+$/)) {
             twitchOptions.video = id;
+            if (startTime > 0) twitchOptions.time = timeToTwitchFormat(startTime);
           } else {
             twitchOptions.channel = id;
           }
@@ -136,6 +144,7 @@ function loadExternalContent(platform, id, url) {
             const player = twitchPlayer.getPlayer();
             if (player) {
               player.addEventListener('ended', handleVideoEnded);
+              if (startTime > 0 && player.seek) player.seek(startTime);
             }
           });
         }
@@ -148,22 +157,26 @@ function loadExternalContent(platform, id, url) {
             video: id,
             width: '100%',
             height: '100%',
-            params: { autoplay: true, mute: false, events: { video_end: handleVideoEnded } }
+            params: { autoplay: true, mute: false, start: startTime, events: { video_end: handleVideoEnded } }
           });
           // DM API events usually bound via params for 'video_end' or addEventListener 'end'
           dmPlayer.addEventListener('end', handleVideoEnded);
         } else if (dmPlayer) {
-          dmPlayer.load(id);
+          dmPlayer.load(id, { start: startTime });
         }
         break;
 
       case 'soundcloud':
         document.getElementById('soundcloud-container').classList.add('visible');
         const scContainer = document.getElementById('soundcloud-container');
+        // SoundCloud widget API is limited for start time on load, would need to event bind
         scContainer.innerHTML = `<iframe id="sc-widget" width="100%" height="100%" scrolling="no" frameborder="no" allow="autoplay" src="https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}&auto_play=true&visual=true"></iframe>`;
         if (window.SC) {
           const widget = SC.Widget('sc-widget');
           widget.bind(SC.Widget.Events.FINISH, handleVideoEnded);
+          widget.bind(SC.Widget.Events.READY, () => {
+            if (startTime > 0) widget.seekTo(startTime * 1000);
+          });
         }
         break;
 
@@ -176,9 +189,9 @@ function loadExternalContent(platform, id, url) {
         iframeContainer.classList.add('visible');
         const iframe = document.getElementById('generic-iframe');
 
-        if (platform === 'streamable') iframe.src = `https://streamable.com/e/${id}?autoplay=1`;
-        else if (platform === 'gdrive') iframe.src = `https://drive.google.com/file/d/${id}/preview`;
-        else if (platform === 'kick') iframe.src = `https://player.kick.com/${id}?autoplay=true`;
+        if (platform === 'streamable') iframe.src = `https://streamable.com/e/${id}?autoplay=1&t=${startTime}`;
+        else if (platform === 'gdrive') iframe.src = `https://drive.google.com/file/d/${id}/preview?t=${startTime}`; // GDrive might not support t parameter same way
+        else if (platform === 'kick') iframe.src = `https://player.kick.com/${id}?autoplay=true&time=${startTime}`; // Guesswork on Kick API
         else if (platform === 'rumble') iframe.src = `https://rumble.com/embed/${id}/?autoplay=1`;
         else iframe.src = url; // Generic iframe
         break;
@@ -187,7 +200,16 @@ function loadExternalContent(platform, id, url) {
         // Use main video player
         video.style.opacity = '1';
         video.src = url;
-        video.play().catch(e => console.error(e));
+
+        video.onloadedmetadata = function () {
+          if (startTime > 0) video.currentTime = startTime;
+          video.play().catch(e => console.error(e));
+        };
+        // Fallback if metadata already loaded or race condition
+        setTimeout(() => {
+          if (startTime > 0 && video.currentTime < 0.1) video.currentTime = startTime;
+          video.play().catch(e => console.error(e));
+        }, 100);
         break;
     }
   } catch (err) {
@@ -278,6 +300,7 @@ function getVolume() {
 
 let lastUpdate = Date.now();
 let hasInitialSync = false; // Prevent new clients from broadcasting until synced
+let loadingVideo = false;
 
 function showTemporaryMessage(message, duration = 2000) {
   statusEl.textContent = message;
@@ -293,14 +316,12 @@ function showTrackInfo(message, duration = 3000) {
   setTimeout(() => currentTrackInfoEl.classList.remove('visible'), duration);
 }
 
-// Send control event to server - ONLY if we have received initial sync
+// Send control event to server
 function sendControlEvent() {
   if (clientControlsDisabled) return;
+  if (loadingVideo) return;
 
-  if (!hasInitialSync) {
-    console.log('Skipping control event - waiting for initial sync');
-    return;
-  }
+
   socket.emit('control', {
     isPlaying: !video.paused,
     currentTime: video.currentTime,
@@ -455,8 +476,23 @@ socket.on('initial-state', (state) => {
   if (currentPlaylist.videos.length > 0 && currentPlaylist.currentIndex >= 0) {
     waitingMessage.style.display = 'none';
     video.style.opacity = '1';
-    hasInitialSync = true;
-    loadCurrentVideo();
+
+    // Use server state to sync immediately
+    if (state.videoState) {
+      // Only set hasInitialSync if we are actually syncing
+      hasInitialSync = true;
+      loadCurrentVideo(state.videoState.currentTime);
+
+      // Ensure playback state matches server
+      if (state.videoState.isPlaying) {
+        video.play().catch(e => console.log('Auto-play failed:', e));
+      } else {
+        video.pause();
+      }
+    } else {
+      hasInitialSync = true;
+      loadCurrentVideo();
+    }
   } else {
     hideAllPlayers();
     waitingMessage.style.display = 'block';
@@ -531,48 +567,118 @@ video.addEventListener('ended', () => {
   }
 });
 
-function loadCurrentVideo() {
-  debugLog('loadCurrentVideo called');
-  // Disable sync broadcast while loading new video
-  hasInitialSync = false;
+function loadCurrentVideo(startTime = 0) {
+  loadingVideo = true; // Block control events during load
 
   if (currentPlaylist.videos.length === 0 || currentPlaylist.currentIndex < 0) {
     waitingMessage.style.display = 'block';
     video.style.opacity = '0.001';
+    imageDisplay.style.display = 'none';
+    currentMediaIsImage = false;
+    loadingVideo = false;
     return;
   }
 
   const currentVideo = currentPlaylist.videos[currentPlaylist.currentIndex];
   currentVideoInfo = currentVideo;
 
-  let videoSrc = `/media/${currentVideo.filename}`;
-  debugLog('Loading video:', videoSrc);
-  video.src = videoSrc;
+  // Check if this is external content
+  if (currentVideo.isExternal || currentVideo.isYouTube) {
+    currentMediaIsImage = false;
+    waitingMessage.style.display = 'none';
 
-  // Phase 8: Inject External Tracks
-  const existingTracks = video.querySelectorAll('track');
-  existingTracks.forEach(t => t.remove());
+    // Use the unified loader
+    const platform = currentVideo.platform || (currentVideo.isYouTube ? 'youtube' : 'local');
+    const id = currentVideo.externalId || currentVideo.youtubeId;
+    const url = currentVideo.externalUrl;
 
-  if (currentVideo.tracks && currentVideo.tracks.subtitles) {
-    currentVideo.tracks.subtitles.forEach(track => {
-      if (track.isExternal && track.url) {
-        const trackEl = document.createElement('track');
-        trackEl.kind = 'subtitles';
-        trackEl.label = track.title || track.language;
-        trackEl.srclang = track.language;
-        trackEl.src = track.url;
-        // Store original ID to help matching later
-        trackEl.dataset.serverId = track.index;
-        video.appendChild(trackEl);
-      }
-    });
+    mediaPlaceholder.style.display = 'none'; // Ensure placeholder hidden for external content
+
+    // Set a timeout fallback for loading flag
+    setTimeout(() => { loadingVideo = false; }, 2000);
+
+    loadExternalContent(platform, id, url, startTime);
+
+    showTemporaryMessage(`${currentVideo.platformName || 'External'} content loaded`, 2000);
+    return;
   }
 
-  // Request sync from server to get the current time
+  // Hide all external player containers when switching to local content
+  hideAllPlayers();
+  currentPlatform = 'local';
+
+  // Check if this is an image file
+  if (isImageFile(currentVideo.filename)) {
+    currentMediaIsImage = true;
+
+    // Hide video, show image
+    video.style.opacity = '0.001';
+    video.pause();
+
+    // Check for BSL-S² local playback
+    const localUrl = getBslLocalUrl(currentVideo.filename);
+    let imageSrc;
+
+    if (localUrl) {
+      imageSrc = localUrl;
+      console.log('BSL-S²: Loading IMAGE from LOCAL file');
+      showTemporaryMessage('Displaying local image (BSL-S²)', 2000);
+    } else {
+      imageSrc = `/media/${currentVideo.filename}`;
+      console.log('Loading image from server:', imageSrc);
+    }
+
+    imageDisplay.src = imageSrc;
+    imageDisplay.style.display = 'block';
+    waitingMessage.style.display = 'none';
+
+    showTemporaryMessage('Image - tap edges to skip', 3000);
+    loadingVideo = false;
+    return;
+  }
+
+  // It's a video or audio file
+  currentMediaIsImage = false;
+
+  // Check if it's an audio file and handle display
+  if (isAudioFile(currentVideo.filename)) {
+    imageDisplay.style.display = 'block';
+    // Use the thumbnail API which extracts embedded cover art
+    imageDisplay.src = `/api/thumbnail/${encodeURIComponent(currentVideo.filename)}`;
+
+    // Hide broken image if no cover art found
+    imageDisplay.onerror = function () {
+      this.style.display = 'none';
+      mediaPlaceholder.style.display = 'flex';
+      showTemporaryMessage('🎵 Playing Audio', 3000);
+    };
+
+    video.style.opacity = '0.001';
+  } else {
+    imageDisplay.style.display = 'none';
+    mediaPlaceholder.style.display = 'none';
+    video.style.opacity = '1';
+  }
+
+  // Check for BSL-S² local playback
+  const localUrl = getBslLocalUrl(currentVideo.filename);
+  let videoSrc;
+
+  if (localUrl) {
+    videoSrc = localUrl;
+    console.log('BSL-S²: Loading from LOCAL file');
+    const msg = isAudioFile(currentVideo.filename) ? 'Playing local audio (BSL-S²)' : 'Playing local video (BSL-S²)';
+    showTemporaryMessage(msg, 2000);
+  } else {
+    videoSrc = `/media/${currentVideo.filename}`;
+    console.log('Loading media from server:', videoSrc);
+  }
+
+  video.src = videoSrc;
+
+  // Request sync from server to get the current time (fallback/confirmation)
   socket.emit('request-sync');
 
-  // Note: clearVideoTracks only disables them, doesn't remove elements.
-  // We removed elements above manually.
   clearVideoTracks();
   video.load();
 
@@ -580,29 +686,27 @@ function loadCurrentVideo() {
     videoLoadAttempts = 0;
     applyTrackSelections();
 
-    // Enforce playback rate here too
-    if (currentServerRate && currentServerRate !== 1.0) {
-      console.log(`[VideoLoad] Applying saved rate in onloadeddata: ${currentServerRate}x`);
-      video.playbackRate = currentServerRate;
+    if (startTime > 0) {
+      console.log(`[VideoLoad] Syncing to initial time: ${startTime}`);
+      video.currentTime = startTime;
     }
 
     if (!video.paused) {
-      video.play().then(() => {
-        // Re-apply rate after play starts to be absolutely sure
-        if (currentServerRate && currentServerRate !== 1.0) {
-          video.playbackRate = currentServerRate;
-        }
-      }).catch(e => {
+      video.play().catch(e => {
         console.log('Playback error:', e);
         handlePlaybackError(e);
       });
     }
+
+    // Clear loading flag after a delay to allow interactions to settle
+    setTimeout(() => {
+      loadingVideo = false;
+      console.log('[VideoLoad] Ready');
+    }, 500);
   };
 
+
   video.onloadedmetadata = function () {
-    if (currentServerRate && currentServerRate !== 1.0) {
-      video.playbackRate = currentServerRate;
-    }
     applyTrackSelections();
   };
 
@@ -1080,7 +1184,22 @@ socket.on('sync', (state) => {
   if (now - lastUpdate < 100) return;
   lastUpdate = now;
 
-  // Handle external players
+  // Handle YouTube sync
+  if (currentMediaIsYouTube) {
+    // If we receive a sync and have an active playlist, hide waiting message
+    if (currentPlaylist.videos.length > 0 && currentPlaylist.currentIndex >= 0) {
+      if (waitingMessage.style.display !== 'none') {
+        console.log('Hiding waiting message - active playlist detected');
+        waitingMessage.style.display = 'none';
+        youtubeContainer.classList.add('visible');
+        hasInitialSync = true;
+      }
+    }
+    syncYouTubePlayer(state);
+    return;
+  }
+
+  // Handle other external players (Vimeo, Twitch, etc.)
   if (currentPlatform && currentPlatform !== 'local' && currentPlatform !== 'directUrl') {
     handleExternalSync(state);
     return;
@@ -1159,7 +1278,7 @@ socket.on('sync', (state) => {
   }
 });
 
-// Event listeners - only send control if we have initial sync
+// Event listeners - send control events to sync with server
 video.addEventListener('play', () => {
   statusEl.classList.remove('visible');
   sendControlEvent();
@@ -1521,149 +1640,9 @@ function getBslLocalUrl(filename) {
   return null;
 }
 
-// Override video source selection in loadCurrentVideo
-// This is done by modifying the existing loadCurrentVideo function's behavior
-const originalLoadCurrentVideo = loadCurrentVideo;
-loadCurrentVideo = function () {
-  if (currentPlaylist.videos.length === 0 || currentPlaylist.currentIndex < 0) {
-    waitingMessage.style.display = 'block';
-    video.style.opacity = '0.001';
-    imageDisplay.style.display = 'none';
-    currentMediaIsImage = false;
-    return;
-  }
+// [Consolidated loadCurrentVideo]
+// Legacy override removed.
 
-  const currentVideo = currentPlaylist.videos[currentPlaylist.currentIndex];
-  currentVideoInfo = currentVideo;
-
-  // Check if this is external content
-  if (currentVideo.isExternal || currentVideo.isYouTube) {
-    currentMediaIsImage = false;
-    waitingMessage.style.display = 'none';
-
-    // Use the unified loader
-    const platform = currentVideo.platform || (currentVideo.isYouTube ? 'youtube' : 'local');
-    const id = currentVideo.externalId || currentVideo.youtubeId;
-    const url = currentVideo.externalUrl;
-
-    mediaPlaceholder.style.display = 'none'; // Ensure placeholder hidden for external content
-
-    loadExternalContent(platform, id, url);
-
-    showTemporaryMessage(`${currentVideo.platformName || 'External'} content loaded`, 2000);
-    return;
-  }
-
-  // Hide all external player containers when switching to local content
-  hideAllPlayers();
-  currentPlatform = 'local';
-
-  // Check if this is an image file
-  if (isImageFile(currentVideo.filename)) {
-    currentMediaIsImage = true;
-
-    // Hide video, show image
-    video.style.opacity = '0.001';
-    video.pause();
-
-    // Check for BSL-S² local playback
-    const localUrl = getBslLocalUrl(currentVideo.filename);
-    let imageSrc;
-
-    if (localUrl) {
-      imageSrc = localUrl;
-      console.log('BSL-S²: Loading IMAGE from LOCAL file');
-      showTemporaryMessage('🖼️ Displaying local image (BSL-S²)', 2000);
-    } else {
-      imageSrc = `/media/${currentVideo.filename}`;
-      console.log('Loading image from server:', imageSrc);
-    }
-
-    imageDisplay.src = imageSrc;
-    imageDisplay.style.display = 'block';
-    waitingMessage.style.display = 'none';
-
-    showTemporaryMessage(`🖼️ Image - tap edges to skip`, 3000);
-    return;
-  }
-
-  // It's a video or audio file
-  currentMediaIsImage = false;
-
-  // Check if it's an audio file and handle display
-  if (isAudioFile(currentVideo.filename)) {
-    imageDisplay.style.display = 'block';
-    // Use the thumbnail API which extracts embedded cover art
-    imageDisplay.src = `/api/thumbnail/${encodeURIComponent(currentVideo.filename)}`;
-
-    // Hide broken image if no cover art found
-    imageDisplay.onerror = function () {
-      this.style.display = 'none';
-      mediaPlaceholder.style.display = 'flex';
-      showTemporaryMessage('🎵 Playing Audio', 3000);
-    };
-
-    video.style.opacity = '0.001';
-  } else {
-    imageDisplay.style.display = 'none';
-    mediaPlaceholder.style.display = 'none';
-    video.style.opacity = '1';
-  }
-
-  // Check for BSL-S² local playback
-  const localUrl = getBslLocalUrl(currentVideo.filename);
-  let videoSrc;
-
-  if (localUrl) {
-    videoSrc = localUrl;
-    console.log('BSL-S²: Loading from LOCAL file');
-    const msg = isAudioFile(currentVideo.filename) ? '📁 Playing local audio (BSL-S²)' : '📁 Playing local video (BSL-S²)';
-    showTemporaryMessage(msg, 2000);
-  } else {
-    videoSrc = `/media/${currentVideo.filename}`;
-    console.log('Loading media from server:', videoSrc);
-  }
-
-  video.src = videoSrc;
-
-  // Request sync from server to get the current time
-  socket.emit('request-sync');
-
-  clearVideoTracks();
-  video.load();
-
-  video.onloadeddata = function () {
-    videoLoadAttempts = 0;
-    applyTrackSelections();
-
-    if (!video.paused) {
-      video.play().catch(e => {
-        console.log('Playback error:', e);
-        handlePlaybackError(e);
-      });
-    }
-  };
-
-  video.onloadedmetadata = function () {
-    applyTrackSelections();
-  };
-
-  video.onerror = function () {
-    console.log('Error loading video:', currentVideo.filename);
-    videoLoadAttempts++;
-
-    if (videoLoadAttempts < maxVideoLoadAttempts) {
-      setTimeout(() => {
-        console.log('Retrying video load, attempt:', videoLoadAttempts);
-        loadCurrentVideo();
-      }, 1000);
-    } else {
-      waitingMessage.style.display = 'block';
-      video.style.opacity = '0.001';
-      showTemporaryMessage('Failed to load video. Please check file format.', 5000);
-    }
-  };
-};
 
 // ==================== YouTube IFrame API Integration ====================
 
@@ -1892,75 +1871,6 @@ loadCurrentVideo = async function () {
   originalLoadWithBsl.call(this);
 };
 
-// Modified sync handler to support YouTube
-const originalSyncHandler = socket._callbacks['$sync'];
-socket.off('sync');
-socket.on('sync', (state) => {
-  const now = Date.now();
-  if (now - lastUpdate < 100) return;
-  lastUpdate = now;
-
-  // If we receive a sync and have an active playlist, hide waiting message
-  if (currentPlaylist.videos.length > 0 && currentPlaylist.currentIndex >= 0) {
-    if (waitingMessage.style.display !== 'none') {
-      debugLog('Hiding waiting message - active playlist detected');
-      waitingMessage.style.display = 'none';
-      hasInitialSync = true;
-
-      if (currentMediaIsYouTube) {
-        youtubeContainer.classList.add('visible');
-      } else {
-        video.style.display = 'block';
-      }
-    }
-  }
-
-  // Handle YouTube sync
-  if (currentMediaIsYouTube) {
-    syncYouTubePlayer(state);
-    return;
-  }
-
-  // Normal video sync
-  if (state.isPlaying !== !video.paused) {
-    if (state.isPlaying) {
-      video.play().catch(e => {
-        console.log('Playback error:', e);
-        handlePlaybackError(e);
-      });
-    } else {
-      video.pause();
-      showTemporaryMessage("Paused", 0);
-    }
-  }
-
-  if (Math.abs(video.currentTime - state.currentTime) > 0.5) {
-    video.currentTime = state.currentTime;
-  }
-
-  if (state.audioTrack !== undefined && state.audioTrack !== currentAudioTrack) {
-    currentAudioTrack = state.audioTrack;
-    if (currentVideoInfo && currentVideoInfo.tracks && currentVideoInfo.tracks.audio) {
-      const audioTrack = currentVideoInfo.tracks.audio[currentAudioTrack];
-      if (audioTrack) {
-        showTrackInfo(`Audio: ${audioTrack.language}${audioTrack.title ? ` - ${audioTrack.title}` : ''}`);
-      }
-    }
-  }
-
-  if (state.subtitleTrack !== undefined && state.subtitleTrack !== currentSubtitleTrack) {
-    currentSubtitleTrack = state.subtitleTrack;
-    if (currentSubtitleTrack >= 0 && currentVideoInfo && currentVideoInfo.tracks && currentVideoInfo.tracks.subtitles) {
-      const subtitleTrack = currentVideoInfo.tracks.subtitles[currentSubtitleTrack];
-      if (subtitleTrack) {
-        showTrackInfo(`Subtitles: ${subtitleTrack.language}${subtitleTrack.title ? ` - ${subtitleTrack.title}` : ''}`);
-      }
-    } else if (currentSubtitleTrack < 0) {
-      showTrackInfo("Subtitles: Off");
-    }
-  }
-});
-
 // Click handler for YouTube overlay (use sync-player controls)
 youtubeClickOverlay.addEventListener('click', (e) => {
   // Skip if controls are disabled by admin
@@ -2117,7 +2027,15 @@ initMobilePrompt();
 // Initialize Subtitle Renderer
 if (typeof SubtitleRenderer !== 'undefined') {
   subtitleRenderer = new SubtitleRenderer(video, subtitleOverlay);
-  video.addEventListener('timeupdate', () => subtitleRenderer.update());
+
+  // Use RAF loop for smooth 60fps subtitle updates (fixes VTT freezing/lag)
+  const subtitleLoop = () => {
+    if (subtitleRenderer && subtitleRenderer.isEnabled) {
+      subtitleRenderer.update();
+    }
+    requestAnimationFrame(subtitleLoop);
+  };
+  requestAnimationFrame(subtitleLoop);
   window.addEventListener('resize', () => subtitleRenderer.resize());
 }
 
@@ -2197,6 +2115,72 @@ function getAppFingerprint() {
 const userFingerprint = getAppFingerprint();
 let chatUsername = localStorage.getItem('chat-username');
 const activeMessages = []; // Track active message elements for count-based fading
+const usernameColorCache = new Map(); // Cache colors for usernames
+
+// Generate a consistent RGB color from username string
+// Constrained to not be too bright or too dark for readability over video
+function getUsernameColor(username) {
+  if (!username) return '#888888';
+
+  // Check cache first
+  if (usernameColorCache.has(username)) {
+    return usernameColorCache.get(username);
+  }
+
+  // Generate hash from username
+  let hash = 0;
+  for (let i = 0; i < username.length; i++) {
+    const char = username.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+
+  // Use hash to generate HSL color with constrained saturation and lightness
+  // Hue: 0-360 (full range for variety)
+  // Saturation: 50-80% (vibrant but not neon)
+  // Lightness: 45-65% (readable over dark and light backgrounds)
+  const hue = Math.abs(hash) % 360;
+  const saturation = 50 + (Math.abs(hash >> 8) % 30); // 50-80%
+  const lightness = 45 + (Math.abs(hash >> 16) % 20); // 45-65%
+
+  const color = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+  usernameColorCache.set(username, color);
+  return color;
+}
+
+// Add a local-only chat message (for system messages like /help)
+function addLocalChatMessage(text, isSystem = false) {
+  const chatMessages = document.getElementById('chat-messages');
+  if (!chatMessages) return;
+
+  const msgEl = document.createElement('div');
+  msgEl.className = 'chat-message system';
+
+  const textEl = document.createElement('span');
+  textEl.className = 'text';
+  textEl.style.color = '#aaa';
+  textEl.style.fontStyle = 'italic';
+  textEl.innerHTML = text;
+
+  msgEl.appendChild(textEl);
+  chatMessages.appendChild(msgEl);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  // Track for fading
+  activeMessages.push(msgEl);
+
+  // Fade after 8 seconds for system messages (longer than normal)
+  setTimeout(() => {
+    if (!msgEl.classList.contains('fading-fast')) {
+      msgEl.classList.add('fading-slow');
+      setTimeout(() => {
+        if (msgEl.parentNode) msgEl.remove();
+        const index = activeMessages.indexOf(msgEl);
+        if (index > -1) activeMessages.splice(index, 1);
+      }, 2100);
+    }
+  }, 8000);
+}
 
 // Initialize chat widget
 function initChatWidget() {
@@ -2238,34 +2222,31 @@ function initChatWidget() {
     resetIdleTimer();
   });
 
-  // Auto-Hide Logic for Toggle Button
+  // Auto-Hide Logic for Toggle Button, Chat Elements, and Mouse Cursor
   let idleTimer;
 
   function resetIdleTimer() {
-    // Always show first
+    // Always show first - remove idle class from body
+    document.body.classList.remove('idle');
     chatHeader.classList.remove('idle-hidden');
 
     clearTimeout(idleTimer);
 
-    // Only hide if:
-    // 1. Chat is collapsed (button says '<')
-    // 2. Playlist is active (videos > 0)
-    // 3. User is idle for 3 seconds
+    // Hide if:
+    // 1. Playlist is active (videos > 0)
+    // 2. User is idle for 3 seconds
+    // Works whether chat is collapsed OR expanded
 
-    // Check conditions for STARTING the timer
-    // Note: we check currentPlaylist inside the timer or here? 
-    // Better here to avoid setting timer unnecessarily.
-
-    const isCollapsed = chatWidget.classList.contains('collapsed');
     const hasPlaylist = typeof currentPlaylist !== 'undefined' && currentPlaylist.videos && currentPlaylist.videos.length > 0;
 
-    if (isCollapsed && hasPlaylist) {
+    if (hasPlaylist) {
       idleTimer = setTimeout(() => {
         // Re-check conditions just in case they changed during wait
-        const stillCollapsed = chatWidget.classList.contains('collapsed');
         const stillHasPlaylist = typeof currentPlaylist !== 'undefined' && currentPlaylist.videos && currentPlaylist.videos.length > 0;
 
-        if (stillCollapsed && stillHasPlaylist) {
+        if (stillHasPlaylist) {
+          // Add idle class to body - CSS will hide cursor and chat elements
+          document.body.classList.add('idle');
           chatHeader.classList.add('idle-hidden');
         }
       }, 3000);
@@ -2276,6 +2257,7 @@ function initChatWidget() {
   document.addEventListener('mousemove', resetIdleTimer);
   document.addEventListener('click', resetIdleTimer);
   document.addEventListener('keydown', resetIdleTimer);
+  document.addEventListener('touchstart', resetIdleTimer);
 
   // Initialize timer
   resetIdleTimer();
@@ -2287,13 +2269,13 @@ function initChatWidget() {
   if (serverName) {
     // Server Mode: Use the name from landing page/session
     chatUsername = serverName;
-    chatInput.placeholder = "Type a message...";
+    chatInput.placeholder = "Type /help for commands list";
   } else {
     // Legacy Mode: Check local storage or ask user
     const localName = localStorage.getItem('chat-username');
     if (localName) {
       chatUsername = localName;
-      chatInput.placeholder = "Type a message...";
+      chatInput.placeholder = "Type /help for commands list";
     } else {
       chatInput.placeholder = "Enter your name...";
     }
@@ -2304,9 +2286,44 @@ function initChatWidget() {
     if (!trimmed) return;
 
     // Command processing
-    if (trimmed.toLowerCase() === '/fullscreen') {
+    const lowerCmd = trimmed.toLowerCase();
+
+    if (lowerCmd === '/help') {
+      addLocalChatMessage('<b>Available Commands:</b><br>' +
+        '/help - Show this help message<br>' +
+        '/fullscreen - Toggle fullscreen mode<br>' +
+        '/rename [name] - Change your display name');
+      chatInput.value = '';
+      return;
+    }
+
+    if (lowerCmd === '/fullscreen') {
       if (typeof requestFullscreenLandscape === 'function') {
         requestFullscreenLandscape();
+      }
+      chatInput.value = '';
+      return;
+    }
+
+    if (lowerCmd.startsWith('/rename ')) {
+      const newName = trimmed.substring(8).trim().substring(0, 20);
+      if (newName) {
+        // Store the old name for local reference
+        const oldName = chatUsername || 'Guest';
+        // Update local storage immediately for responsiveness
+        chatUsername = newName;
+        sessionStorage.setItem('sync-player-name', newName);
+        localStorage.setItem('chat-username', newName);
+        // Send to server - server will broadcast "X is now known as Y" to all clients
+        if (typeof socket !== 'undefined') {
+          socket.emit('chat-message', {
+            fingerprint: userFingerprint,
+            sender: oldName,
+            message: `/rename ${newName}`
+          });
+        }
+      } else {
+        addLocalChatMessage('Usage: /rename [new name]');
       }
       chatInput.value = '';
       return;
@@ -2321,7 +2338,7 @@ function initChatWidget() {
         localStorage.setItem('chat-username', chatUsername);
       }
 
-      chatInput.placeholder = "Type a message...";
+      chatInput.placeholder = "Type /help for commands list";
 
       // Optionally send a "joined" message or just set local state
       // For now, we just set the name and reset input
@@ -2379,6 +2396,7 @@ function addChatMessage(data) {
 
   const senderEl = document.createElement('span');
   senderEl.className = 'sender';
+  senderEl.style.color = getUsernameColor(safeUsername);
   senderEl.innerHTML = safeUsername + ':';
 
   const textEl = document.createElement('span');

@@ -261,6 +261,11 @@ if (roomPathMatch) {
 
 // Config display
 socket.on('config', (cfg) => {
+  // Update global config variables
+  skipSeconds = cfg.skipSeconds || 5;
+  skipIntroSeconds = cfg.skipIntroSeconds || 90;
+
+  // Update DOM elements
   if (cfg.port) document.getElementById('cfg-port').textContent = cfg.port;
   if (cfg.skipSeconds) document.getElementById('cfg-skip').textContent = cfg.skipSeconds + 's';
   if (cfg.volumeStep) document.getElementById('cfg-volume').textContent = Math.round(cfg.volumeStep * 100) + '%';
@@ -276,9 +281,14 @@ socket.on('config', (cfg) => {
   document.getElementById('cfg-bsl-threshold').textContent = cfg.bslAdvancedMatchThreshold || '1';
   document.getElementById('cfg-admin-lock').textContent = cfg.adminFingerprintLock ? 'On' : 'Off';
   document.getElementById('cfg-subtitle-renderer').textContent = cfg.subtitleRenderer || 'wsr';
-  skipSeconds = cfg.skipSeconds || 5;
-  skipIntroSeconds = cfg.skipIntroSeconds || 90;
+
   document.getElementById('skip-intro-text').textContent = skipIntroSeconds + 's';
+
+  // Update skip buttons text
+  const skipBackText = document.getElementById('skip-back-text');
+  const skipFwdText = document.getElementById('skip-forward-text');
+  if (skipBackText) skipBackText.textContent = `${skipSeconds}s`;
+  if (skipFwdText) skipFwdText.textContent = `${skipSeconds}s`;
 
   // Server mode room info
   if (cfg.serverMode) {
@@ -298,7 +308,46 @@ socket.on('config', (cfg) => {
 
 // Request config on load
 socket.on('connect', () => {
-  // If we have a room code, join as admin
+  // Update connection status UI
+  const dot = document.getElementById('connection-dot');
+  const text = document.getElementById('connection-text');
+  if (dot && text) {
+    dot.classList.remove('offline');
+    text.textContent = 'Connected';
+  }
+
+  console.log('Connected to server, registering admin...');
+
+  // Extract room code if in server mode URL (redundant check but safe)
+  const roomPathMatch = window.location.pathname.match(/^\/admin\/([A-Z0-9]{6})$/i);
+  const roomCode = roomPathMatch ? roomPathMatch[1] : null;
+
+  // Register as admin for BSL
+  socket.emit('bsl-admin-register', {
+    fingerprint: adminFingerprint,
+    roomCode: currentRoomCode || roomCode
+  });
+
+  // Check for VPN/proxy software
+  fetch('/api/vpn-check')
+    .then(res => res.json())
+    .then(data => {
+      if (data.detected && data.detected.length > 0) {
+        const vpnWarning = document.getElementById('vpn-warning');
+        document.getElementById('vpn-warning-list').textContent = data.detected.join(', ');
+        vpnWarning.classList.add('visible');
+        addLog(`VPN/Proxy detected: ${data.detected.join(', ')}`, 'warning');
+        setTimeout(() => {
+          vpnWarning.classList.add('fade-out');
+          setTimeout(() => {
+            vpnWarning.classList.remove('visible', 'fade-out');
+          }, 500);
+        }, 3000);
+      }
+    })
+    .catch(err => console.error('Error checking VPN:', err));
+
+  // Join logic
   if (currentRoomCode) {
     console.log('Joining room as admin:', currentRoomCode);
     socket.emit('join-room', {
@@ -310,12 +359,12 @@ socket.on('connect', () => {
         console.log('Joined room as admin:', response);
         currentRoomName = response.roomName;
         if (response.isAdmin) {
-          // Server mode: Hide auth screen and show admin UI
           const authScreen = document.getElementById('auth-screen');
           const adminUI = document.getElementById('admin-ui');
           if (authScreen) authScreen.classList.add('hidden');
           if (adminUI) adminUI.classList.add('authenticated');
           console.log('Admin authenticated for room:', currentRoomCode);
+          initNavIndicator();
         } else {
           alert('You are not the admin of this room. Redirecting...');
           window.location.href = `/watch/${currentRoomCode}`;
@@ -327,7 +376,7 @@ socket.on('connect', () => {
       }
     });
   } else {
-    // Legacy mode - normal admin registration
+    // Legacy/Single mode
     socket.emit('get-config');
   }
 });
@@ -454,6 +503,7 @@ async function loadFiles() {
       mainVideoIndex = window.INITIAL_DATA.currentVideoIndex ?? -1;
       updatePlaylistDisplay();
       updateDashboardStats();
+      if (typeof refreshFfmpegFileList === 'function') refreshFfmpegFileList();
     }
     // Important: clear it so we don't re-use stale data if we manually refresh parts
     // and delete it to save memory
@@ -567,6 +617,7 @@ async function addToPlaylist(file) {
     updatePlaylistDisplay();
     updateHevcWarning();
     updateDashboardStats();
+    if (typeof refreshFfmpegFileList === 'function') refreshFfmpegFileList();
     // Clear the isNew flag after animation
     setTimeout(() => { fileCopy.isNew = false; }, 300);
   }
@@ -592,6 +643,7 @@ function removeFromPlaylist(index) {
       updatePlaylistDisplay();
       updateHevcWarning();
       updateDashboardStats();
+      if (typeof refreshFfmpegFileList === 'function') refreshFfmpegFileList();
     }, 400);
   } else {
     // Fallback if no element found
@@ -604,6 +656,7 @@ function removeFromPlaylist(index) {
     updatePlaylistDisplay();
     updateHevcWarning();
     updateDashboardStats();
+    if (typeof refreshFfmpegFileList === 'function') refreshFfmpegFileList();
   }
 }
 
@@ -896,8 +949,9 @@ function launchPlaylist() {
   document.getElementById('launch-btn').innerHTML = '🔄 Relaunch Playlist';
 }
 
-function showStatus(message, type) {
+function showStatus(message, type, duration = 5000) {
   const statusEl = document.getElementById('status-message');
+  if (!statusEl) return;
   statusEl.textContent = message;
   statusEl.className = `status-message visible status-${type}`;
   // Keep inline flex styles
@@ -907,7 +961,12 @@ function showStatus(message, type) {
 
   setTimeout(() => {
     statusEl.classList.remove('visible');
-  }, 5000);
+  }, duration);
+}
+
+function showToast(message, duration = 3000, isError = false) {
+  const type = isError ? 'error' : 'success';
+  showStatus(message, type, duration);
 }
 
 // Logging functions
@@ -1284,9 +1343,28 @@ function renderRemoteTrackControls() {
     const opt = document.createElement('option');
     const trackId = idx;
     opt.value = trackId;
-    const displayTitle = track.title || 'Track ' + trackId;
-    const fileNameInfo = track.filename ? ` (${track.filename})` : '';
-    opt.textContent = `${track.language} - ${displayTitle}${fileNameInfo}`;
+
+    // Log filename to console as requested
+    if (track.filename) {
+      console.log(`[Subtitle Track ${idx}]`, track.filename);
+    }
+
+    // Clean display name - remove filename
+    const displayTitle = track.title || `Track ${idx + 1}`;
+    // const fileNameInfo = track.filename ? ` (${track.filename})` : ''; // Hidden
+
+    const lang = track.language || 'und';
+
+    // Extract format
+    let formatLabel = '';
+    if (track.filename) {
+      const ext = track.filename.split('.').pop().toLowerCase();
+      if (ext === 'ass' || ext === 'ssa') formatLabel = '[ASS] ';
+      else if (ext === 'vtt') formatLabel = '[VTT] ';
+      else formatLabel = `[${ext.toUpperCase()}] `;
+    }
+
+    opt.textContent = `${formatLabel}${lang} - ${displayTitle}`;
     subtitleSelect.appendChild(opt);
   });
   subtitleSelect.appendChild(document.createElement('option')).textContent = "---"; // Separator just in caseVisual
@@ -1546,11 +1624,7 @@ function updateControlAvailability() {
 }
 
 // Socket handlers
-socket.on('config', (config) => {
-  skipSeconds = config.skipSeconds || 5;
-  document.getElementById('skip-back-text').textContent = `${skipSeconds}s`;
-  document.getElementById('skip-forward-text').textContent = `${skipSeconds}s`;
-});
+// Config handler merged into top config listener
 
 socket.on('playlist-update', (playlistObj) => {
   serverPlaylist = playlistObj;
@@ -1566,6 +1640,10 @@ socket.on('playlist-update', (playlistObj) => {
     updatePlaylistDisplay();
     updateHevcWarning();
     updateDashboardStats();
+    // Refresh FFmpeg Tools dropdowns
+    if (typeof refreshFfmpegFileList === 'function') {
+      refreshFfmpegFileList();
+    }
     // Change Launch button to Relaunch since playlist is already active
     document.getElementById('launch-btn').innerHTML = '🔄 Relaunch Playlist';
   }
@@ -1639,52 +1717,17 @@ const throttledSyncHandler = throttle((state) => {
     const displayEl = dom.currentTime || document.getElementById('current-time-display');
     if (displayEl) displayEl.textContent = `Current: ${timeStr} (${totalSecs}s)`;
   }
+
+  // Update playback speed if changed
+  if (state.playbackRate !== undefined && state.playbackRate !== currentSpeed) {
+    currentSpeed = state.playbackRate;
+    updateSpeedDisplay();
+  }
 }, 1000); // Only update UI once per second
 
 socket.on('sync', throttledSyncHandler);
 
-// Admin authentication handlers
-socket.on('connect', () => {
-  // Update connection status UI
-  const dot = document.getElementById('connection-dot');
-  const text = document.getElementById('connection-text');
-  if (dot && text) {
-    dot.classList.remove('offline');
-    text.textContent = 'Connected';
-  }
-
-  console.log('Connected to server, registering admin...');
-
-  // Extract room code if in server mode URL
-  const roomPathMatch = window.location.pathname.match(/^\/admin\/([A-Z0-9]{6})$/i);
-  const roomCode = roomPathMatch ? roomPathMatch[1] : null;
-
-  socket.emit('bsl-admin-register', {
-    fingerprint: adminFingerprint,
-    roomCode: roomCode
-  });
-
-  // Check for VPN/proxy software
-  fetch('/api/vpn-check')
-    .then(res => res.json())
-    .then(data => {
-      if (data.detected && data.detected.length > 0) {
-        const vpnWarning = document.getElementById('vpn-warning');
-        document.getElementById('vpn-warning-list').textContent = data.detected.join(', ');
-        vpnWarning.classList.add('visible');
-        addLog(`VPN/Proxy detected: ${data.detected.join(', ')}`, 'warning');
-
-        // Auto-dismiss after 3 seconds
-        setTimeout(() => {
-          vpnWarning.classList.add('fade-out');
-          setTimeout(() => {
-            vpnWarning.classList.remove('visible', 'fade-out');
-          }, 500); // Wait for fade animation
-        }, 3000);
-      }
-    })
-    .catch(err => console.log('VPN check skipped'));
-});
+// Connection merged above
 
 socket.on('disconnect', () => {
   // Update connection status UI
@@ -1792,26 +1835,7 @@ if (killBtn) {
 }
 
 // Handle sync event to update speed
-socket.on('sync', (state) => {
-  if (state.playbackRate !== undefined && state.playbackRate !== currentSpeed) {
-    currentSpeed = state.playbackRate;
-    updateSpeedDisplay();
-  }
-
-  // Existing sync logic for time update
-  if (state.currentTime !== undefined) {
-    // Clamp to 0 to prevent negative values from rewind
-    const totalSecs = Math.max(0, Math.floor(state.currentTime));
-    const hours = Math.floor(totalSecs / 3600);
-    const mins = Math.floor((totalSecs % 3600) / 60);
-    const secs = totalSecs % 60;
-    const timeStr = hours > 0
-      ? `${hours}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
-      : `${mins}:${secs.toString().padStart(2, '0')}`;
-    const displayEl = document.getElementById('current-time-display');
-    if (displayEl) displayEl.textContent = `Current: ${timeStr} (${totalSecs}s)`;
-  }
-});
+// Sync handler merged into throttledSyncHandler
 
 // Handle admin auth result
 socket.on('admin-auth-result', (result) => {
@@ -2392,6 +2416,11 @@ function refreshFfmpegFileList() {
     // Refresh custom UI
     setupCustomDropdown(select);
   });
+
+  // Refresh Subtitle Tool lists as well
+  if (typeof refreshSubtitleToolLists === 'function') {
+    refreshSubtitleToolLists();
+  }
 }
 
 // Mock job queue refresh for now
@@ -2537,6 +2566,12 @@ function setupCustomDropdown(select) {
 
     // Insert after select and hide select
     select.parentNode.insertBefore(wrapper, select.nextSibling);
+
+    // Copy margin-bottom from original select if it has one (important for stacking)
+    if (select.style.marginBottom) {
+      wrapper.style.marginBottom = select.style.marginBottom;
+    }
+
     select.style.display = 'none'; // Hide native select
 
     // Toggle logic
@@ -2649,3 +2684,249 @@ function initExtractTracksFiltering() {
 
 // Run init
 document.addEventListener('DOMContentLoaded', initExtractTracksFiltering);
+
+// ==================== Subtitle Tools Logic ====================
+
+function initSubtitleTools() {
+  const sourceSelect = document.getElementById('subtool-source-input');
+  const targetSelect = document.getElementById('subtool-target-input');
+  const orphanCheckbox = document.getElementById('subtool-orphan-mode');
+
+  if (!sourceSelect || !targetSelect) return;
+
+  // Listen for source change to populate tracks
+  sourceSelect.addEventListener('change', async () => {
+    const filename = sourceSelect.value;
+    await updateSubtitleTracksList(filename);
+  });
+
+  // Listen for orphan mode toggle
+  if (orphanCheckbox) {
+    orphanCheckbox.addEventListener('change', () => {
+      refreshSubtitleToolLists();
+    });
+  }
+
+  // Custom dropdown setup
+  setupCustomDropdown(sourceSelect);
+  setupCustomDropdown(targetSelect);
+  setupCustomDropdown(document.getElementById('subtool-track-input'));
+  setupCustomDropdown(document.getElementById('subtool-orphan-input'));
+
+  // Initial population
+  refreshSubtitleToolLists();
+}
+
+let isFetchingOrphans = false;
+
+function refreshSubtitleToolLists() {
+  const sourceSelect = document.getElementById('subtool-source-input');
+  const targetSelect = document.getElementById('subtool-target-input');
+  const orphanCheckbox = document.getElementById('subtool-orphan-mode');
+
+  if (!sourceSelect || !targetSelect) return;
+
+  const isOrphanMode = orphanCheckbox ? orphanCheckbox.checked : false;
+
+  // Toggle UI visibility
+  const standardControls = document.getElementById('subtool-standard-controls');
+  const orphanControls = document.getElementById('subtool-orphan-controls');
+  const standardActions = document.getElementById('subtool-actions-standard');
+  const orphanActions = document.getElementById('subtool-actions-orphan');
+
+  if (standardControls) standardControls.style.display = isOrphanMode ? 'none' : 'block';
+  if (orphanControls) orphanControls.style.display = isOrphanMode ? 'block' : 'none';
+  if (standardActions) standardActions.style.display = isOrphanMode ? 'none' : 'flex';
+  if (orphanActions) orphanActions.style.display = isOrphanMode ? 'block' : 'none';
+
+  // Populate Target (always needed)
+  const currentTarget = targetSelect.value;
+  targetSelect.innerHTML = '<option value="">Select target video...</option>';
+
+  if (typeof playlist !== 'undefined' && playlist.length > 0) {
+    console.log(`[SubtitleTools] Populating target list with ${playlist.length} items.`);
+    playlist.forEach(file => {
+      const opt = document.createElement('option');
+      opt.value = file.filename;
+      opt.textContent = file.filename;
+      targetSelect.appendChild(opt);
+    });
+  } else {
+    console.warn('[SubtitleTools] Playlist is empty or undefined during refresh.');
+  }
+  if (currentTarget) targetSelect.value = currentTarget;
+  setupCustomDropdown(targetSelect);
+
+  if (isOrphanMode) {
+    // Fetch Orphans
+    fetchOrphansList();
+  } else {
+    // Populate Source
+    const currentSource = sourceSelect.value;
+    sourceSelect.innerHTML = '<option value="">Select source video...</option>';
+    if (typeof playlist !== 'undefined' && playlist.length > 0) {
+      playlist.forEach(file => {
+        const opt = document.createElement('option');
+        opt.value = file.filename;
+        opt.textContent = file.filename;
+        sourceSelect.appendChild(opt);
+      });
+    }
+    if (currentSource) sourceSelect.value = currentSource;
+    setupCustomDropdown(sourceSelect);
+  }
+}
+
+async function fetchOrphansList() {
+  const orphanSelect = document.getElementById('subtool-orphan-input');
+  if (!orphanSelect) return;
+
+  if (isFetchingOrphans) return;
+  isFetchingOrphans = true;
+
+  orphanSelect.innerHTML = '<option value="">Loading orphans...</option>';
+  setupCustomDropdown(orphanSelect);
+
+  try {
+    const res = await fetch('/api/tracks/orphans');
+    const data = await res.json();
+
+    orphanSelect.innerHTML = '<option value="">Select an orphan file...</option>';
+
+    if (data.orphans && data.orphans.length > 0) {
+      data.orphans.forEach(o => {
+        const opt = document.createElement('option');
+        opt.value = o.filename;
+        opt.textContent = `${o.filename} (${o.type})`;
+        orphanSelect.appendChild(opt);
+      });
+    } else {
+      const opt = document.createElement('option');
+      opt.textContent = "No orphan subtitles found";
+      opt.disabled = true;
+      orphanSelect.appendChild(opt);
+    }
+  } catch (e) {
+    console.error('Error fetching orphans:', e);
+    orphanSelect.innerHTML = '<option value="">Error loading list</option>';
+  } finally {
+    isFetchingOrphans = false;
+    setupCustomDropdown(orphanSelect);
+  }
+}
+
+async function updateSubtitleTracksList(filename) {
+  const trackSelect = document.getElementById('subtool-track-input');
+  trackSelect.innerHTML = '<option value="">Loading...</option>';
+  trackSelect.disabled = true;
+  setupCustomDropdown(trackSelect);
+
+  if (!filename) {
+    trackSelect.innerHTML = '<option value="">Select source first...</option>';
+    setupCustomDropdown(trackSelect);
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/tracks/${encodeURIComponent(filename)}`);
+    const data = await response.json();
+
+    trackSelect.innerHTML = '<option value="">Select a track...</option>';
+    let hasExternal = false;
+
+    if (data.subtitles && data.subtitles.length > 0) {
+      data.subtitles.forEach((track) => {
+        if (track.isExternal) {
+          hasExternal = true;
+          const opt = document.createElement('option');
+          opt.value = track.index;
+          const fName = track.filename ? track.filename.split(/[/\\]/).pop() : 'External';
+          opt.textContent = `[${track.language || 'und'}] ${track.title || 'Subtitle'} (${fName})`;
+          trackSelect.appendChild(opt);
+        }
+      });
+    }
+
+    if (!hasExternal) {
+      const opt = document.createElement('option');
+      opt.textContent = "No external tracks found";
+      opt.disabled = true;
+      trackSelect.appendChild(opt);
+    } else {
+      trackSelect.disabled = false;
+    }
+
+    setupCustomDropdown(trackSelect);
+  } catch (e) {
+    console.error(e);
+    trackSelect.innerHTML = '<option value="">Error loading tracks</option>';
+    setupCustomDropdown(trackSelect);
+  }
+}
+
+async function runSubtitleTool(action) {
+  const sourceSelect = document.getElementById('subtool-source-input');
+  const targetSelect = document.getElementById('subtool-target-input');
+  const trackSelect = document.getElementById('subtool-track-input');
+  const orphanSelect = document.getElementById('subtool-orphan-input');
+
+  let source, trackIndex, orphanFile;
+  const target = targetSelect.value;
+
+  if (action === 'bind-orphan') {
+    orphanFile = orphanSelect ? orphanSelect.value : null;
+    if (!orphanFile || !target) {
+      showToast('Please select an orphan file and a target video.', 3000, true);
+      return;
+    }
+  } else {
+    // Standard rebind/share
+    source = sourceSelect ? sourceSelect.value : null;
+    trackIndex = trackSelect ? trackSelect.value : null;
+
+    if (!source || !target || !trackIndex) {
+      showToast('Please select source, target, and track.', 3000, true);
+      return;
+    }
+    if (source === target) {
+      showToast('Source and Target cannot be the same.', 3000, true);
+      return;
+    }
+  }
+
+  const actionMap = {
+    'rebind': 'REBIND (Move)',
+    'share': 'SHARE (Link)',
+    'bind-orphan': 'BIND (Assign)'
+  };
+
+  if (!confirm(`Are you sure you want to ${actionMap[action]} this subtitle?`)) return;
+
+  const eventName = action === 'rebind' ? 'rebind-subtitle' :
+    action === 'share' ? 'share-subtitle' :
+      'bind-orphan';
+
+  const payload = action === 'bind-orphan'
+    ? { orphanFile, targetVideo: target }
+    : { sourceVideo: source, targetVideo: target, trackIndex: parseInt(trackIndex) };
+
+  // Emit with callback
+  socket.emit(eventName, payload, (response) => {
+    if (response && response.success) {
+      showToast(`Subtitle ${action} successful!`, 3000);
+
+      if (action === 'rebind') {
+        if (typeof updateSubtitleTracksList === 'function' && source) updateSubtitleTracksList(source);
+      } else if (action === 'bind-orphan') {
+        if (typeof fetchOrphansList === 'function') fetchOrphansList();
+      }
+    } else {
+      showToast(`Error: ${response ? response.error : 'Unknown'}`, 4000, true);
+    }
+  });
+}
+
+// Init tools
+document.addEventListener('DOMContentLoaded', initSubtitleTools);
+window.runSubtitleTool = runSubtitleTool;
+

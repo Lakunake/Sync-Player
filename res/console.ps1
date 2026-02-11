@@ -469,8 +469,6 @@ if (-not (Test-Path "res\server.js")) {
     exit 1
 }
 
-Write-Status "DEBUG" "Starting server with port $($config.PORT)..."
-
 # Clear retry counter on successful start
 if (Test-Path $RETRY_FILE) { Remove-Item $RETRY_FILE -Force }
 
