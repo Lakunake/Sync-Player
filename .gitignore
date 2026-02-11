@@ -169,3 +169,8 @@ res/config.txt
 /res/tracks
 *.zip
 *.rar
+res/js/jassub_local_backup.js
+res/test_node_av.js
+res/test_node_av_capabilities.js
+res/test_node_av_cover_art.js
+res/test_thumb.jpg
