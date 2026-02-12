@@ -30,7 +30,7 @@ A FULLY synchronized non-coder friendly HTML5 video player originally for Minecr
 * [Node.js](https://nodejs.org/) installed on your machine (v20.6.0+ required for config to work)
 * [ffmpeg](https://ffmpeg.org/) installed for high bitrate support and video optimization (via [node-av](https://github.com/seydx/node-av))
 * Media files placed in the `/media/` folder (supports MP3, MP4, .MKV, .AVI, .MOV, .WMV, .WEBM, .PNG, .JPG, .WEBP, embeds and more)
-
+ 
 ---
 
 ## Features
