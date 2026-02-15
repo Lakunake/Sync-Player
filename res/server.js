@@ -104,6 +104,11 @@ if (!fs.existsSync(TRACKS_DIR)) {
 if (!fs.existsSync(TRACKS_MANIFEST_DIR)) {
   fs.mkdirSync(TRACKS_MANIFEST_DIR, { recursive: true });
 }
+// Ensure cert directory exists (in root)
+const CERT_DIR = path.join(ROOT_DIR, 'cert');
+if (!fs.existsSync(CERT_DIR)) {
+  fs.mkdirSync(CERT_DIR, { recursive: true });
+}
 
 // =================================================================
 // Stale Track Cleanup - Delete tracks for media files missing > 7 days
@@ -437,8 +442,36 @@ let server;
 
 if (config.use_https === 'true') {
   try {
-    const keyPath = path.join(ROOT_DIR, config.ssl_key_file || 'key.pem');
-    const certPath = path.join(ROOT_DIR, config.ssl_cert_file || 'cert.pem');
+    // Helper to find cert files with fallback paths
+    const findCertPath = (configuredPath, defaultName) => {
+      // 1. If configured path is explicitly set and exists, use it
+      if (configuredPath && configuredPath !== defaultName) {
+        const directPath = path.resolve(ROOT_DIR, configuredPath);
+        if (fs.existsSync(directPath)) return directPath;
+      }
+
+      // 2. Check cert/ (Highest priority for defaults - ROOT)
+      const certDirPath = path.join(ROOT_DIR, 'cert', defaultName);
+      if (fs.existsSync(certDirPath)) return certDirPath;
+
+      // 3. Check res/cert/ (Legacy/Moved)
+      const resCertPath = path.join(ROOT_DIR, 'res', 'cert', defaultName);
+      if (fs.existsSync(resCertPath)) return resCertPath;
+
+      // 4. Check res/ (Legacy)
+      const resPath = path.join(ROOT_DIR, 'res', defaultName);
+      if (fs.existsSync(resPath)) return resPath;
+
+      // 4. Check Root (Legacy)
+      const rootPath = path.join(ROOT_DIR, defaultName);
+      if (fs.existsSync(rootPath)) return rootPath;
+
+      // Default to root even if missing (to trigger error logs below)
+      return path.join(ROOT_DIR, configuredPath || defaultName);
+    };
+
+    const keyPath = findCertPath(config.ssl_key_file, 'key.pem');
+    const certPath = findCertPath(config.ssl_cert_file, 'cert.pem');
 
     if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
       const options = {
@@ -447,7 +480,14 @@ if (config.use_https === 'true') {
       };
       server = https.createServer(options, app);
     } else {
-      console.error('SSL key or certificate file not found. Falling back to HTTP.');
+      console.error(`${colors.red}[SSL] Certificates not found! Expected at:${colors.reset}`);
+      if (!fs.existsSync(keyPath)) {
+        console.error(`  Missing Key: ${keyPath}`);
+      }
+      if (!fs.existsSync(certPath)) {
+        console.error(`  Missing Cert: ${certPath}`);
+      }
+      console.error(`${colors.yellow}[SSL] Falling back to HTTP.${colors.reset}`);
       server = http.createServer(app);
     }
   } catch (error) {
@@ -1482,8 +1522,116 @@ app.use('/css', express.static(path.join(__dirname, 'css')));
 app.use('/font', express.static(path.join(__dirname, 'font')));
 
 // API to list available fonts
-app.get('/api/fonts', (req, res) => {
+// Helper: Extract fonts from video file (if any)
+// Global cache for font hashes
+const fontHashCache = new Map(); // filename -> { mtimeMs, hash }
+
+async function getFontHash(filePath) {
+  try {
+    const stats = await fs.promises.stat(filePath);
+    const filename = path.basename(filePath);
+    const cached = fontHashCache.get(filename);
+
+    if (cached && cached.mtimeMs === stats.mtimeMs) {
+      return cached.hash;
+    }
+
+    const content = await fs.promises.readFile(filePath);
+    const hash = crypto.createHash('sha256').update(content).digest('hex');
+    fontHashCache.set(filename, { mtimeMs: stats.mtimeMs, hash });
+    return hash;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Helper: Extract fonts from video file (if any)
+async function extractFonts(videoFilename) {
+  if (!videoFilename) return;
+
+  const videoPath = path.join(MEDIA_DIR, videoFilename);
+  if (!fs.existsSync(videoPath)) return;
+
+  // Ensure font dir exists
   const fontDir = path.join(__dirname, 'font');
+  if (!fs.existsSync(fontDir)) fs.mkdirSync(fontDir, { recursive: true });
+
+  let demuxer = null;
+  try {
+    if (Demuxer) {
+      demuxer = await Demuxer.open(videoPath);
+
+      // Get hashes of all existing fonts to check against content
+      const existingFiles = await fs.promises.readdir(fontDir);
+      const existingHashes = new Set();
+
+      for (const file of existingFiles) {
+        if (/\.(ttf|otf|woff|woff2)$/i.test(file)) {
+          const hash = await getFontHash(path.join(fontDir, file));
+          if (hash) existingHashes.add(hash);
+        }
+      }
+
+      for (const stream of demuxer.streams) {
+        // codecpar.codecType: 4=attachment
+        const isAttachment = stream.codecpar?.codecType === 4 || stream.type === 'attachment';
+
+        if (isAttachment) {
+          const metadata = stream.metadata?.getAll?.() || {};
+          const filename = metadata.filename || stream.codecpar?.extradata?.filename;
+
+          if (filename && /\.(ttf|otf)$/i.test(filename)) {
+            // Get attachment content by reading the first packet
+            const packetGen = demuxer.packets(stream.index);
+            const next = await packetGen.next();
+
+            if (!next.done && next.value) {
+              const packet = next.value;
+              if (packet.data) {
+                const fontBuffer = Buffer.from(packet.data);
+                const fontHash = crypto.createHash('sha256').update(fontBuffer).digest('hex');
+
+                if (existingHashes.has(fontHash)) {
+                  console.log(`[FontExtract] Skipping ${filename} - identical font content already exists`);
+                } else {
+                  const safeFontName = path.basename(filename);
+                  const outputPath = path.join(fontDir, safeFontName);
+
+                  console.log(`[FontExtract] Extracting new font content: ${safeFontName}`);
+                  await fs.promises.writeFile(outputPath, fontBuffer);
+
+                  // Update hash cache
+                  existingHashes.add(fontHash);
+                  const stats = await fs.promises.stat(outputPath);
+                  fontHashCache.set(safeFontName, { mtimeMs: stats.mtimeMs, hash: fontHash });
+                }
+              }
+              packet.free();
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`[FontExtract] Error processing ${videoFilename}:`, err.message);
+  } finally {
+    if (demuxer && typeof demuxer.close === 'function') {
+      await demuxer.close();
+    }
+  }
+}
+
+
+// API to list available fonts (with optional extraction)
+app.get('/api/fonts', async (req, res) => {
+  const fontDir = path.join(__dirname, 'font');
+
+  // If video query param provided, try to extract fonts first
+  if (req.query.video) {
+    const start = Date.now();
+    await extractFonts(req.query.video);
+  }
+
   fs.readdir(fontDir, (err, files) => {
     if (err) {
       console.error('Error listing fonts:', err);
@@ -1494,7 +1642,7 @@ app.get('/api/fonts', (req, res) => {
     res.json(fontFiles);
   });
 });
-// JASSUB library (libass WebAssembly wrapper for ASS subtitles)
+// JASSUB library
 app.use('/jassub', express.static(path.join(__dirname, 'node_modules/jassub/dist')));
 app.use('/rvfc-polyfill', express.static(path.join(__dirname, 'node_modules/rvfc-polyfill')));
 app.use('/abslink', express.static(path.join(__dirname, 'node_modules/abslink')));
@@ -2656,7 +2804,13 @@ io.on('connection', (socket) => {
       return { error: 'Source tracks manifest not found' };
     }
 
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    let manifest;
+    try {
+      manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    } catch (e) {
+      console.error(`[Manifest Error] Failed to parse ${manifestName}:`, e.message);
+      return { error: 'Invalid source manifest file' };
+    }
     if (!manifest.externalTracks || !Array.isArray(manifest.externalTracks)) {
       return { error: 'No external tracks found in source' };
     }
@@ -2677,7 +2831,7 @@ io.on('connection', (socket) => {
 
     if (fs.existsSync(manifestPath)) {
       try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch (e) { }
-    } 
+    }
     if (!manifest.externalTracks) manifest.externalTracks = [];
 
     // Find next safe track index from existing entries
@@ -4120,11 +4274,12 @@ async function cleanVttFile(filePath) {
 // --- Thumbnail Helper Functions ---
 
 async function generateAudioCoverArt(videoPath, thumbnailPath) {
+  let input = null;
   try {
     if (!Demuxer) throw new Error('node-av Demuxer not available');
 
     console.log(`${colors.cyan}Processing audio cover art with node-av for: ${path.basename(videoPath)}${colors.reset}`);
-    const input = await Demuxer.open(videoPath);
+    input = await Demuxer.open(videoPath);
     let coverStream = null;
 
     // 1. Look for stream with AV_DISPOSITION_ATTACHED_PIC (0x0400 = 1024)
@@ -4160,21 +4315,24 @@ async function generateAudioCoverArt(videoPath, thumbnailPath) {
         }
         packet.free();
       }
-      await input.close();
       return found;
     }
 
-    await input.close();
     return false;
   } catch (err) {
     console.error(`${colors.red}Error extracting audio cover art: ${err.message}${colors.reset}`);
     return false;
+  } finally {
+    if (input && typeof input.close === 'function') {
+      await input.close();
+    }
   }
 }
 
 async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFilename) {
   if (!Demuxer || !Decoder || !Encoder || !FilterAPI || !Muxer) return false;
 
+  let input = null;
   try {
     console.log(`${colors.cyan}Processing thumbnail with node-av for: ${safeFilename}${colors.reset}`);
 
@@ -4190,7 +4348,7 @@ async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFile
       console.log(`${colors.cyan}Downscaling existing master thumbnail for ${safeFilename}${colors.reset}`);
     }
 
-    const input = await Demuxer.open(inputPath);
+    input = await Demuxer.open(inputPath);
     const videoStream = input.video();
     if (!videoStream) throw new Error('No video stream found');
 
@@ -4216,14 +4374,12 @@ async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFile
 
     for await (const frame of frameGen) {
       if (!gotFrame) {
-        if (!filter) {
-          filter = await FilterAPI.create(`scale=-1:${width},format=yuvj420p`, {
-            width: frame.width,
-            height: frame.height,
-            pixelFormat: frame.format,
-            timeBase: videoStream.timeBase
-          });
-        }
+        filter = await FilterAPI.create(`scale=-1:${width},format=yuv420p`, {
+          width: frame.width,
+          height: frame.height,
+          pixelFormat: frame.format,
+          timeBase: videoStream.timeBase
+        });
 
         const filteredFrames = await filter.processAll(frame);
         for (const filteredFrame of filteredFrames) {
@@ -4249,8 +4405,6 @@ async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFile
       }
     }
 
-    if (input.close) await input.close();
-
     if (gotFrame) {
       console.log(`${colors.green}Generated thumbnail via node-av for: ${safeFilename}${colors.reset}`);
       return true;
@@ -4260,6 +4414,10 @@ async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFile
   } catch (avError) {
     console.error(`${colors.yellow}node-av thumbnail failed:${colors.reset}`, avError.message);
     return false;
+  } finally {
+    if (input && typeof input.close === 'function') {
+      await input.close();
+    }
   }
 }
 

@@ -108,7 +108,7 @@ video_autoplay: false
 
 # Admin Fingerprint Lock
 # When enabled, only the first machine to access /admin will be allowed
-# The fingerprint is stored in admin_fingerprint.txt
+# The fingerprint is stored in memory/memory.json
 # Set to true to enable, false to allow any machine to access admin
 admin_fingerprint_lock: false
 
@@ -156,6 +156,10 @@ fi
 if [ ! -d "memory/tracks" ]; then
     mkdir -p memory/tracks
     echo "Created memory/tracks directory"
+fi
+if [ ! -d "cert" ]; then
+    mkdir -p cert
+    echo "Created cert directory"
 fi
 
 # =================================================================
@@ -299,6 +303,7 @@ if [ -f "config.env" ]; then
                 "server_mode")            SERVER_MODE="$value" ;;
                 "chat_enabled")           CHAT_ENABLED="$value" ;;
                 "data_hydration")         DATA_HYDRATION="$value" ;;
+                "show_ssl_tip")           SHOW_SSL_TIP="$value" ;;
             esac
         fi
     done < config.env
@@ -330,6 +335,7 @@ elif [ -f "config.txt" ]; then
                 "server_mode")            SERVER_MODE="$value" ;;
                 "chat_enabled")           CHAT_ENABLED="$value" ;;
                 "data_hydration")         DATA_HYDRATION="$value" ;;
+                "show_ssl_tip")           SHOW_SSL_TIP="$value" ;;
             esac
         fi
     done < config.txt
@@ -370,6 +376,39 @@ else
 fi
 
 # =================================================================
+# Check for Tailscale (Active Connection)
+# =================================================================
+TAILSCALE_IP=""
+TAILSCALE_URL=""
+
+if command -v tailscale &> /dev/null; then
+    # Only consider it active if we have an IP
+    TS_IP=$(tailscale ip -4 2>/dev/null)
+    if [ ! -z "$TS_IP" ]; then
+        TAILSCALE_IP="$TS_IP"
+        
+        # Try to get DNS name
+        TS_DNS=$(tailscale status --json 2>/dev/null | grep -o '"DNSName": "[^"]*"' | head -n1 | cut -d'"' -f4 | sed 's/\.$//')
+        
+        # Fallback to cert filename if DNS lookup fails
+        if [ -z "$TS_DNS" ]; then
+             # Look for a cert file with a pattern like machine.tailnet.ts.net.crt
+             TS_CRT=$(find cert res/cert res -name "*.ts.net.crt" 2>/dev/null | head -n1)
+             if [ ! -z "$TS_CRT" ]; then
+                 TS_DNS=$(basename "$TS_CRT" .crt)
+             fi
+        fi
+        
+        if [ ! -z "$TS_DNS" ]; then
+            TAILSCALE_URL="https://${TS_DNS}:${PORT}"
+        elif [ ! -z "$TAILSCALE_IP" ]; then
+             # Fallback to IP if no DNS name found (though HTTPS might complain)
+             TAILSCALE_URL="https://${TAILSCALE_IP}:${PORT}"
+        fi
+    fi
+fi
+
+# =================================================================
 # Display server information
 # =================================================================
 echo ""
@@ -393,13 +432,45 @@ echo "- Data Hydration: ${DATA_HYDRATION:-true}"
 echo ""
 echo -e "\033[33mAccess URLs:\033[0m"
 PROTOCOL="http"
+
+# Check for SSL certs in cert (priority), res/cert, res/, or root
+if [ "$USE_HTTPS" = "true" ]; then 
+    PROTOCOL="https"
+elif [ -f "cert/cert.pem" ] || [[ -n $(find cert -name "*.ts.net.crt" 2>/dev/null) ]]; then
+    PROTOCOL="https"
+    USE_HTTPS="true"
+elif [ -f "res/cert/cert.pem" ] || [[ -n $(find res/cert -name "*.ts.net.crt" 2>/dev/null) ]]; then
+    PROTOCOL="https"
+    USE_HTTPS="true"
+elif [ -f "res/cert.pem" ] || [[ -n $(find res -name "*.ts.net.crt" 2>/dev/null) ]]; then
+    PROTOCOL="https"
+    USE_HTTPS="true"
+    PROTOCOL="https"
+    USE_HTTPS="true"
+fi
+
 if [ "$USE_HTTPS" = "true" ]; then PROTOCOL="https"; fi
-echo "- Your network: ${PROTOCOL}://${LOCAL_IP}:${PORT}"
-echo "- Admin Panel: ${PROTOCOL}://${LOCAL_IP}:${PORT}/admin"
+
+if [ ! -z "$TAILSCALE_URL" ]; then
+    echo "- Tailscale:       $TAILSCALE_URL"
+    echo "- Tailscale Admin: $TAILSCALE_URL/admin"
+else
+    echo "- Your network:    ${PROTOCOL}://${LOCAL_IP}:${PORT}"
+    echo "- Admin Panel:     ${PROTOCOL}://${LOCAL_IP}:${PORT}/admin"
+fi
 echo "- Testing purposes: ${PROTOCOL}://localhost:${PORT}"
 echo ""
 echo -e "\033[33mFirewall: Manual configuration may be required for network access\033[0m"
 echo ""
+
+if [ "$USE_HTTPS" != "true" ] && [ "${SHOW_SSL_TIP:-true}" != "false" ]; then
+    echo "Tip: SSL generation scripts are available in cert/ for Tailscale/HTTPS support."
+fi
+
+echo ""
+
+
+
 echo -e "\033[36mStarting Server...\033[0m"
 echo ""
 write_status "DEBUG" "Current directory: $PWD"

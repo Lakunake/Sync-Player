@@ -1,6 +1,13 @@
 # Sync-Player PowerShell Startup Script
 # Equivalent to legacylauncher.bat with improved error handling and cleaner syntax, legacy launcher will no longer get major updates
 
+# Force Admin logic
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+    $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    Start-Process powershell -Verb RunAs -ArgumentList $argList
+    exit
+}
+
 # Re-launch with bypass if not already bypassed (fixes right-click "Run with PowerShell")
 if ($ExecutionContext.SessionState.LanguageMode -eq 'ConstrainedLanguage' -or 
     (Get-ExecutionPolicy) -notin @('Bypass', 'Unrestricted', 'RemoteSigned')) {
@@ -116,6 +123,10 @@ if (-not (Test-Path "res\tracks")) {
 if (-not (Test-Path "memory\tracks")) {
     New-Item -ItemType Directory -Path "memory\tracks" | Out-Null
     Write-Host "Created memory\tracks directory"
+}
+if (-not (Test-Path "cert")) {
+    New-Item -ItemType Directory -Path "cert" | Out-Null
+    Write-Host "Created cert directory"
 }
 
 # =================================================================
@@ -267,6 +278,8 @@ $config = @{
     CHAT_ENABLED             = "true"
     DATA_HYDRATION           = "true"
     SUBTITLE_RENDERER        = "wsr"
+    SSL_KEY_FILE             = "key.pem"
+    SSL_CERT_FILE            = "cert.pem"
 }
 
 # Helper to map env vars to config keys
@@ -287,6 +300,8 @@ $envMap = @{
     "SYNC_CHAT_ENABLED"              = "CHAT_ENABLED"
     "SYNC_DATA_HYDRATION"            = "DATA_HYDRATION"
     "SYNC_SUBTITLE_RENDERER"         = "SUBTITLE_RENDERER"
+    "SYNC_SSL_KEY_FILE"              = "SSL_KEY_FILE"
+    "SYNC_SSL_CERT_FILE"             = "SSL_CERT_FILE"
 }
 
 # 1. Read config.env (Primary)
@@ -383,6 +398,7 @@ SYNC_BSL_MATCH_THRESHOLD=1
 SYNC_USE_HTTPS=false
 SYNC_SSL_KEY_FILE=key.pem
 SYNC_SSL_CERT_FILE=cert.pem
+# Fingerprint is stored in memory/memory.json
 SYNC_ADMIN_FINGERPRINT_LOCK=false
 "@
     $defaultEnv | Out-File -FilePath "config.env" -Encoding UTF8
@@ -390,9 +406,25 @@ SYNC_ADMIN_FINGERPRINT_LOCK=false
 }
 
 # =================================================================
-# Firewall Information
+# Firewall Configuration
 # =================================================================
-$Host.UI.RawUI.WindowTitle = "Admin Console - Firewall Info"
+$Host.UI.RawUI.WindowTitle = "Admin Console - Checking Firewall"
+Write-Host "Checking Firewall rules..."
+
+$firewallRuleName = "Sync-Player-Port-$($config.PORT)"
+$ruleExists = Get-NetFirewallRule -DisplayName $firewallRuleName -ErrorAction SilentlyContinue
+
+if (-not $ruleExists) {
+    Write-Host "Adding Firewall rule for port $($config.PORT)..." -ForegroundColor Yellow
+    try {
+        New-NetFirewallRule -DisplayName $firewallRuleName -Direction Inbound -LocalPort $config.PORT -Protocol TCP -Action Allow -Profile Any | Out-Null
+        Write-Status "SUCCESS" "Firewall rule added for port $($config.PORT)"
+    } catch {
+        Write-Status "ERROR" "Failed to add firewall rule: $_"
+    }
+} else {
+    Write-Status "OK" "Firewall rule exists"
+}
 Write-Host ""
 Write-Status "INFO" "Ensure port $($config.PORT) is open in Windows Firewall for network access"
 Write-Host ""
@@ -427,6 +459,139 @@ catch {
 }
 
 # =================================================================
+# Tailscale Detection & Auto-Config
+# =================================================================
+$Host.UI.RawUI.WindowTitle = "Admin Console - Checking Tailscale"
+
+$Host.UI.RawUI.WindowTitle = "Admin Console - Checking Tailscale"
+
+$TAILSCALE_IP = $null
+$TAILSCALE_URL = $null
+
+# 1. Try to detect Tailscale IP via CLI
+if (Get-Command tailscale -ErrorAction SilentlyContinue) {
+    try {
+        $tsStatus = tailscale status --json | ConvertFrom-Json
+        if ($tsStatus.BackendState -eq "Running") {
+             $possibleIP = $tsStatus.TailscaleIPs | Where-Object { $_ -match "^\d+\.\d+\.\d+\.\d+$" } | Select-Object -First 1
+             
+             # VERIFY: Ensure this IP is actually assigned to a local interface
+             # (Fixes issue where 'tailscale status' reports IP but interface is down/APIPA)
+             if ($possibleIP) {
+                $localIPs = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress
+                if ($localIPs -contains $possibleIP) {
+                    $TAILSCALE_IP = $possibleIP
+                } else {
+                    Write-Status "DEBUG" "Tailscale reports $possibleIP but it is not active on any interface. Assuming stopped."
+                }
+             }
+        }
+    } catch {}
+}
+
+# 2. Check for Tailscale certificates in cert/ OR res/cert/ OR res/ folder (Independent of CLI)
+# Look for *.ts.net.crt or *.ts.net.pem
+$tsCrt = Get-ChildItem -Path "cert", "res\cert", "res" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "\.ts\.net\.(crt|pem)$" } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+
+if ($tsCrt) {
+    # Determine possible key names
+    $tsKeyName1 = $tsCrt.Name -replace "\.(crt|pem)$", ".key"
+    $tsKeyPath1 = Join-Path $tsCrt.DirectoryName $tsKeyName1
+    
+    $tsKeyName2 = $tsCrt.Name -replace "\.(crt|pem)$", ".pem"
+    $tsKeyPath2 = Join-Path $tsCrt.DirectoryName $tsKeyName2
+    
+    $finalKeyPath = $null
+    
+    if (Test-Path $tsKeyPath1) { $finalKeyPath = $tsKeyPath1 }
+    elseif (Test-Path $tsKeyPath2) { $finalKeyPath = $tsKeyPath2 }
+
+    if ($finalKeyPath) {
+        # Found valid pair
+        if ($config.USE_HTTPS -eq "false") {
+            Write-Host "Found Tailscale certificate: $($tsCrt.Name)" -ForegroundColor Green
+            Write-Host "Automatically enabling HTTPS for this session." -ForegroundColor Green
+            
+            # Override config
+            $config.USE_HTTPS = "true"
+            # Use relative path from root if possible, or substantial path
+            if ($tsCrt.DirectoryName.EndsWith("cert")) {
+                 # Could be root/cert or res/cert
+                 if ($tsCrt.DirectoryName -like "*\res\cert") {
+                     $config.SSL_CERT_FILE = "res\cert\$($tsCrt.Name)"
+                 } else {
+                     $config.SSL_CERT_FILE = "cert\$($tsCrt.Name)"
+                 }
+            } else {
+                 $config.SSL_CERT_FILE = "res\$($tsCrt.Name)"
+            }
+            $config.SSL_KEY_FILE = $finalKeyPath
+            
+            # Set environment variables
+            $env:SYNC_USE_HTTPS = "true"
+            $env:SYNC_SSL_CERT_FILE = $config.SSL_CERT_FILE
+            $env:SYNC_SSL_KEY_FILE = $config.SSL_KEY_FILE
+            $env:SYNC_SUBTITLE_RENDERER = "jassub"
+        }
+        
+        # Update config to bind to 0.0.0.0 just in case server.js respects an env var (though it seems to ignore arg mostly)
+        # But for display, we want to show the specific URL
+        
+        # Only set and display Tailscale URL if the network is actually active (IP detected)
+        if ($TAILSCALE_IP) {
+            if ($tsStatus.Self.DNSName) {
+                # Use official DNS name (remove trailing dot)
+                $tsHostname = $tsStatus.Self.DNSName.TrimEnd('.')
+                $TAILSCALE_URL = "https://${tsHostname}:$($config.PORT)"
+            } else {
+                # Fallback to filename based parsing
+                $tsHostname = $tsCrt.Name -replace "\.(crt|pem)$", ""
+                $TAILSCALE_URL = "https://${tsHostname}:$($config.PORT)"
+            }
+            
+            # ----------------------------------------------------------------
+            # Auto-Fix: DNS Resolution via hosts file
+            # ----------------------------------------------------------------
+            try {
+                # Check if hostname resolves to the Tailscale IP
+                $resolvedIP = [System.Net.Dns]::GetHostAddresses($tsHostname) | Where-Object { $_.IPAddressToString -eq $TAILSCALE_IP } | Select-Object -First 1
+                
+                if (-not $resolvedIP) {
+                    Write-Host "Detected DNS issue: '$tsHostname' does not resolve to '$TAILSCALE_IP'" -ForegroundColor Yellow
+                    Write-Host "Attempting to fix by updating Windows hosts file..." -ForegroundColor Yellow
+                    
+                    $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+                    $entries = Get-Content $hostsPath -ErrorAction SilentlyContinue
+                    $entryToAdd = "$TAILSCALE_IP`t$tsHostname # Sync-Player Tailscale Fix"
+                    
+                    if (-not ($entries | Where-Object { $_ -match "$TAILSCALE_IP\s+$tsHostname" })) {
+                        Add-Content -Path $hostsPath -Value $entryToAdd -Force
+                        Write-Host "SUCCESS: Added '$tsHostname' to hosts file." -ForegroundColor Green
+                        Write-Host "The URL https://${tsHostname}:$($config.PORT) should now work." -ForegroundColor Green
+                    }
+                }
+            } catch {
+                # If resolution throws an error (e.g. host not found), we should also try to fix
+                 try {
+                    $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+                    $entryToAdd = "$TAILSCALE_IP`t$tsHostname # Sync-Player Tailscale Fix"
+                    Add-Content -Path $hostsPath -Value $entryToAdd -Force
+                    Write-Host "SUCCESS: Added entry to hosts file (DNS was failing)." -ForegroundColor Green
+                 } catch {
+                    Write-Host "WARNING: Could not update hosts file automatically. Run as Admin to fix." -ForegroundColor Red
+                 }
+            }
+        }
+    }
+} 
+
+# 3. Fallback URL using IP if no certs but IP detected (HTTP or whatever config is)
+if (-not $TAILSCALE_URL -and $TAILSCALE_IP) {
+     $protocol = if ($config.USE_HTTPS -eq "true") { "https" } else { "http" }
+     $TAILSCALE_URL ="${protocol}://${TAILSCALE_IP}:$($config.PORT)"
+}
+
+# =================================================================
 # Display server information
 # =================================================================
 $Host.UI.RawUI.WindowTitle = "Admin Console"
@@ -438,6 +603,11 @@ Write-Host "Settings:" -ForegroundColor Yellow
 Write-Host "- Server Port: $($config.PORT)" -ForegroundColor White
 Write-Host "- Join Mode: $($config.JOIN_MODE)" -ForegroundColor White
 Write-Host "- HTTPS: $($config.USE_HTTPS)" -ForegroundColor White
+if ($config.USE_HTTPS -eq "true") {
+    $certName = Split-Path $config.SSL_CERT_FILE -Leaf
+    $keyName = Split-Path $config.SSL_KEY_FILE -Leaf
+    Write-Host "- SSLs: $certName, $keyName" -ForegroundColor White
+}
 Write-Host "- BSL-S2 Mode: $($config.BSL_S2_MODE)" -ForegroundColor White
 Write-Host "- Client Controls: $(if ($config.CLIENT_CONTROLS_DISABLED -eq 'true') { 'Disabled' } else { 'Enabled' })" -ForegroundColor White
 Write-Host "- Client Sync: $(if ($config.CLIENT_SYNC_DISABLED -eq 'true') { 'Disabled' } else { 'Enabled' })" -ForegroundColor White
@@ -447,12 +617,23 @@ Write-Host "- Subtitle Renderer: $($config.SUBTITLE_RENDERER)" -ForegroundColor 
 Write-Host ""
 Write-Host "Access URLs:" -ForegroundColor Yellow
 $protocol = if ($config.USE_HTTPS -eq "true") { "https" } else { "http" }
-Write-Host "- Your network: ${protocol}://${LOCAL_IP}:$($config.PORT)" -ForegroundColor White
-Write-Host "- Admin Panel: ${protocol}://${LOCAL_IP}:$($config.PORT)/admin" -ForegroundColor White
+
+if ($TAILSCALE_URL) {
+    Write-Host "- Tailscale:        $TAILSCALE_URL" -ForegroundColor White
+    Write-Host "- Tailscale Admin:  $TAILSCALE_URL/admin" -ForegroundColor White
+} else {
+    Write-Host "- Your network:    ${protocol}://${LOCAL_IP}:$($config.PORT)" -ForegroundColor White
+    Write-Host "- Admin Panel:     ${protocol}://${LOCAL_IP}:$($config.PORT)/admin" -ForegroundColor White
+}
 Write-Host "- Testing purposes: ${protocol}://localhost:$($config.PORT)" -ForegroundColor White
 Write-Host ""
-Write-Host "Firewall: Manual configuration required for network access" -ForegroundColor Yellow
+
 Write-Host ""
+if ($config.USE_HTTPS -ne "true" -and $config.SHOW_SSL_TIP -ne "false") {
+    Write-Host "Tip: SSL generation scripts are available in cert/ for Tailscale/HTTPS support." -ForegroundColor Gray
+    Write-Host ""
+}
+
 Write-Host "Starting Server..." -ForegroundColor Cyan
 Write-Host ""
 Write-Status "DEBUG" "Current directory: $PWD"

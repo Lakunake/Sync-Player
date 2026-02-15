@@ -570,6 +570,17 @@ video.addEventListener('ended', () => {
 function loadCurrentVideo(startTime = 0) {
   loadingVideo = true; // Block control events during load
 
+  // Cleanup proper subtitle state to prevent persistence across videos
+  if (jassubInstance) {
+    try { jassubInstance.destroy(); } catch (e) { }
+    jassubInstance = null;
+  }
+  if (subtitleRenderer) subtitleRenderer.disable();
+
+  // Reset track trackers so applyTrackSelections re-applies logic for the new video
+  lastAppliedAudioTrack = null;
+  lastAppliedSubtitleTrack = null;
+
   if (currentPlaylist.videos.length === 0 || currentPlaylist.currentIndex < 0) {
     waitingMessage.style.display = 'block';
     video.style.opacity = '0.001';
@@ -928,9 +939,14 @@ async function loadJASSUB(trackUrl) {
 
     // Verify and fetch fonts (Main Thread)
     // Dynamic loading: Fetch list of available fonts from server
+    // Pass current video filename to trigger extraction if needed
     let fontFiles = [];
     try {
-      const listRes = await fetch('/api/fonts');
+      const fontApiUrl = currentVideoInfo && currentVideoInfo.filename
+        ? `/api/fonts?video=${encodeURIComponent(currentVideoInfo.filename)}`
+        : '/api/fonts';
+
+      const listRes = await fetch(fontApiUrl);
       if (listRes.ok) {
         fontFiles = await listRes.json();
         console.log('[Subtitle] Discovered fonts:', fontFiles);

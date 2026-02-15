@@ -1,67 +1,114 @@
-**It says that im lacking...**
+# Frequently Asked Questions (FAQ)
 
-Open Command Prompt(CMD), and write these commands in order or whichever ones you need
+## Installation & Setup
 
-```cmd
-winget install --id OpenJS.NodeJS.LTS -e
-md(or cd in some cases) (Your path to the code)
-npm install
-```
+**How do I install the required dependencies?**
 
-**I get a white screen in minecraft and get a non trusted message on chrome with https on**
+If the console says "Node.js is not installed" or you need to update:
+1.  Open PowerShell or Command Prompt as Administrator.
+2.  Run: `winget install --id OpenJS.NodeJS.LTS -e`
+3.  Restart your terminal.
+4.  Navigate to the folder where you downloaded Sync-Player.
+5.  Run the startup script: `.\res\console.ps1` (or `run.bat`).
+    *   It will automatically install any missing dependencies like `express` or `socket.io`.
 
-If you're just gonna use chrome, you can just skip that page with the button to the bottom right of the page.
+---
 
-If you're gonna use it with minecraft, follow this tut:
+## Connection & Networking
 
->WILL UPDATE LATER
+**How do I use Tailscale?**
+
+Tailscale allows you to host a session without port forwarding.
+1.  **Install Tailscale** on both the host (you) and the client (the person watching).
+2.  **Login** to the same Tailscale network (or share your machine with them).
+3.  Run `.\res\console.ps1`.
+4.  If active, you will see a **Tailscale URL** (e.g., `https://machine.tailnet.ts.net:3000`).
+5.  Share this URL with your friends!
+
+**"Site cannot be reached" / DNS Issues**
+
+If the Tailscale URL doesn't work (but the IP does):
+1.  **Disable "Use Secure DNS"** in your browser settings (Chrome/Edge/Firefox).
+    *   Browsers often bypass local DNS resolution (which Tailscale needs).
+2.  **Check MagicDNS**: Ensure it's enabled in your [Tailscale Admin Console](https://login.tailscale.com/admin/dns).
+3.  **Check HTTPS setting on Tailscale**: Ensure it's set to "Auto" or "Off" in your [Tailscale Admin Console](https://login.tailscale.com/admin/dns).   
+4.  **Flush DNS**: Run `ipconfig /flushdns` in a terminal.
+
+**My router doesn't support NAT loopback (I can't see my own stream)** (@xdcoelite)
+
+If you can't connect to your own public IP/domain locally:
+1.  Run `.\res\console.ps1` as **Administrator**.
+2.  It will attempt to automatically patch your `hosts` file to resolve the domain to your local IP.
+3.  **Manual Fix**:
+    *   Go to `C:\Windows\System32\drivers\etc`.
+    *   Open `hosts` as Admin.
+    *   Add: `192.168.x.x yourdomain.ddns.net` (Replace with your local IP).
+
+---
+
+## HTTPS & Certificates
+
+**I get a "Not Secure" warning in my browser / White screen in Minecraft**
+
+This happens because the default SSL certificate is **self-signed**.
+*   **Fix for Browser**: Click "Advanced" > "Proceed to..." (or type `thisisunsafe` in Chrome if there's no button).
+*   **Fix for Minecraft (WebDisplays)**:
+    *   The in-game browser (CEF) strictly blocks invalid certs.
+    *   **Solution 1 (Recommended)**: Use **Tailscale**. It provides valid, trusted certificates automatically.
+    *   **Solution 2**: Add the `.pem/.crt(you can rename them vice versa)` to your computer's "Trusted Root Certification Authorities" store (little advanced).
+
+---
+
+## Playback & Codecs
+
+**My video doesn't load / I can hear audio but see no video**
+
+This is usually a **Codec Issue**.
+*   **The Problem**: Web browsers (Chrome, Edge, MCF) **cannot play** H.265 (HEVC) or MKV files natively.
+*   **The Solutions**:
+    1.  **Use BSL-S² (Recommended)**: This feature syncs a file playing locally on your PC (VLC/MPV) with the room. It supports **any** format.
+    2.  **Re-encode**: Use HandBrake to convert the video to **H.264 (AVC) MP4**.
+    3.  **Hardware Acceleration**: In rare cases, enabling it in `chrome://settings/system` might help if your GPU supports it.
 
 **Subtitle/Audio track changing does not work**
 
-Extract Audio/Subtitle tracks and relaunch playlist through ffmpeg tools
-Enable #enable-experimental-web-platform-features through Chrome Flags(chrome://flags/) or your browser's config/flags
+1.  Use the **FFmpeg Tools** in the Admin Panel to extract/convert tracks.
+2.  The server uses `node-av` to process these quickly, but the browser needs them in a specific format (VTT for subs, AAC/MP3 for audio).
 
-**My friend can't see the hevc video im sharing and can only hear it**
+---
 
-Thats most likely a hardware related issue, but it could be solved by doing one of these(if not you have almost no way of)
+## Usage
 
-- Check [chrome://gpu/](chrome://gpu/) if it says anything about hevce being true, Install HEVC extensions from windows store and Turn on BSL-S²
-- If no, re-encode the video in H.264 or any chromium supported codec through either Handbrake or FFmpeg
-- Use BSL-S2
-  
+**How do I update the software?**
 
-**How do I properly use the admin panel?**
+1.  Download the latest version.
+2.  Extract the files **over** your existing folder (replace all).
+3.  Run `.\res\console.ps1`.
+    *   It will automatically check for new dependencies and install them.
+    *   Your `config.env` and `memory/` (database) are safe and won't be overwritten if you kept them outside or backed them up.
 
-Open the admin panel on your default browser, chrome or safari for example, then launch your playlist, after you can freely watch the videos you want while using the admin panel through your default browser like a remote that overrides the other ones to ensure sync
+**How do I use the Admin Panel?**
 
-**What's a "main" video?**  
+1.  Open the **Admin Panel URL** (shown in `console.ps1`) on your **real browser** (Chrome/Edge on your second monitor or phone).
+2.  Use it as a **remote control** for the in-game player.
+3.  You can change videos, seek, pause, and manage the playlist from there. This ensures proper sync for everyone.
 
-Main videos are typically large or high-quality files that may take longer to load. Selecting one as the “main” video lets the player preload it in the background while smaller, faster videos are playing.
+**What's a "Main" video?**
 
-**My video doesn't load. What do I do?** 
- 
-Check if your video uses H.265/HEVC codecs. Chromium browsers do not support this. To check your file, you can use a tool like MediaInfo
- or check its properties in your OS. After, use either HandBrake or ffmpeg to convert your file to an mp4 encoded with H.264. Handbrake is the easy choice of two. Also check if your video file is renamed to filmeva.mp4 and is under the videos folder if you're on an older version of the software
+"Main" videos are prioritized for preloading. If you have a playlist, marking a large movie as "Main" ensures it buffers while you watch the intros or shorter clips.
 
-**Can I use this outside of Minecraft and on normal browsers?**
+**Can I use this outside of Minecraft?**
 
-Althought it is originally designed for the WebDisplays mod, it should have *ALMOST* no problems doing that.(Mod's custom browser lets me do some things general browsers wont allow)
+Yes! It works in any modern web browser. While designed for the WebDisplays mod, you can use it to sync videos with friends in Chrome/Edge/Firefox just as easily.
 
-**Does the software collect any personal data?**           
+---
 
-No. This software does not transmit usage information, track the files you open, or send data to third parties. 
+## Other
 
-**My router doesn't support NAT loopback, I can't see the stream. What do I do?**  (thank you @xdcoelite)
+**Does this software collect data?**
 
-Edit your computer’s `hosts` file:     
-1. Go to `C:\Windows\System32\drivers\etc`  
-2. Open `hosts` as Administrator.  
-3. Add:  
-   `192.168.x.x yourdomain.ddns.net`  
-   (Replace with your PC’s local IP and your public hostname.)  
+**No.** Your files, logs, and playback history stay on your machine. No data is sent to us or any third party.
 
-Now accessing `yourdomain.ddns.net` will connect locally.
+---
 
-⚠️ Editing your hosts file can affect how your system resolves domains. Only make changes if you’re comfortable, and double-check the entries.
-
-Your Question isn't here? Then visit [Questions](https://github.com/Lakunake/Minecraft-WebDisplays-Video-Player/discussions/2) or email **johnwebdisplay@gmail.com**.
+*Still have questions? Visit [GitHub Discussions](https://github.com/Lakunake/Minecraft-WebDisplays-Video-Player/discussions) or contact the support email.*
