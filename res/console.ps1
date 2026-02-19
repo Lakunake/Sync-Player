@@ -1,12 +1,7 @@
 # Sync-Player PowerShell Startup Script
 # Equivalent to legacylauncher.bat with improved error handling and cleaner syntax, legacy launcher will no longer get major updates
 
-# Force Admin logic
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-    $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-    Start-Process powershell -Verb RunAs -ArgumentList $argList
-    exit
-}
+
 
 # Re-launch with bypass if not already bypassed (fixes right-click "Run with PowerShell")
 if ($ExecutionContext.SessionState.LanguageMode -eq 'ConstrainedLanguage' -or 
@@ -102,7 +97,7 @@ if (-not $nodeInstalled) {
 # =================================================================
 # Initialize configuration (in root directory)
 # =================================================================
-$Host.UI.RawUI.WindowTitle = "Admin Console - Initializing"
+ "Admin Console - Initializing"
 
 # =================================================================
 # Initialize configuration (in root directory)
@@ -280,6 +275,7 @@ $config = @{
     SUBTITLE_RENDERER        = "wsr"
     SSL_KEY_FILE             = "key.pem"
     SSL_CERT_FILE            = "cert.pem"
+    SKIP_FIREWALL_CHECK      = "false"
 }
 
 # Helper to map env vars to config keys
@@ -302,6 +298,7 @@ $envMap = @{
     "SYNC_SUBTITLE_RENDERER"         = "SUBTITLE_RENDERER"
     "SYNC_SSL_KEY_FILE"              = "SSL_KEY_FILE"
     "SYNC_SSL_CERT_FILE"             = "SSL_CERT_FILE"
+    "SYNC_SKIP_FIREWALL_CHECK"       = "SKIP_FIREWALL_CHECK"
 }
 
 # 1. Read config.env (Primary)
@@ -400,34 +397,74 @@ SYNC_SSL_KEY_FILE=key.pem
 SYNC_SSL_CERT_FILE=cert.pem
 # Fingerprint is stored in memory/memory.json
 SYNC_ADMIN_FINGERPRINT_LOCK=false
+
+# Firewall
+# Set to true to skip automatic firewall rule checks/generation
+SYNC_SKIP_FIREWALL_CHECK=false
 "@
     $defaultEnv | Out-File -FilePath "config.env" -Encoding UTF8
     Write-Host "Default config.env created"
 }
 
 # =================================================================
+# Check if Admin rights are needed (Firewall)
+# =================================================================
+if ($config.SKIP_FIREWALL_CHECK -ne "true") {
+    $firewallRuleName = "Sync-Player-Port-$($config.PORT)"
+    $ruleExists = Get-NetFirewallRule -DisplayName $firewallRuleName -ErrorAction SilentlyContinue
+
+    if (-not $ruleExists) {
+        # Rule is missing, we need admin to add it
+        if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+            Write-Host ""
+            Write-Host "Firewall rule for port $($config.PORT) is missing." -ForegroundColor Yellow
+            Write-Host "Restarting as Administrator to add firewall rule..." -ForegroundColor Yellow
+            Write-Host ""
+            
+            $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+            Start-Process powershell -Verb RunAs -ArgumentList $argList
+            exit
+        }
+    }
+}
+
+# =================================================================
 # Firewall Configuration
 # =================================================================
 $Host.UI.RawUI.WindowTitle = "Admin Console - Checking Firewall"
-Write-Host "Checking Firewall rules..."
+if ($config.SKIP_FIREWALL_CHECK -ne "true") {
+    Write-Host "Checking Firewall rules..."
 
-$firewallRuleName = "Sync-Player-Port-$($config.PORT)"
-$ruleExists = Get-NetFirewallRule -DisplayName $firewallRuleName -ErrorAction SilentlyContinue
+    $firewallRuleName = "Sync-Player-Port-$($config.PORT)"
+    $ruleExists = Get-NetFirewallRule -DisplayName $firewallRuleName -ErrorAction SilentlyContinue
+    $ruleAdded = $false
 
-if (-not $ruleExists) {
-    Write-Host "Adding Firewall rule for port $($config.PORT)..." -ForegroundColor Yellow
-    try {
-        New-NetFirewallRule -DisplayName $firewallRuleName -Direction Inbound -LocalPort $config.PORT -Protocol TCP -Action Allow -Profile Any | Out-Null
-        Write-Status "SUCCESS" "Firewall rule added for port $($config.PORT)"
-    } catch {
-        Write-Status "ERROR" "Failed to add firewall rule: $_"
+    if (-not $ruleExists) {
+        Write-Host "Adding Firewall rule for port $($config.PORT)..." -ForegroundColor Yellow
+        try {
+            New-NetFirewallRule -DisplayName $firewallRuleName -Direction Inbound -LocalPort $config.PORT -Protocol TCP -Action Allow -Profile Any | Out-Null
+            Write-Status "SUCCESS" "Firewall rule added for port $($config.PORT)"
+            $ruleAdded = $true
+        } catch {
+            Write-Status "ERROR" "Failed to add firewall rule: $_"
+        }
+    } else {
+        Write-Status "OK" "Firewall rule exists"
+    }
+    
+    # Notify user if the rule was just added (so they know why it might have paused or elevated)
+    if ($ruleAdded) {
+        Write-Host ""
+        Write-Status "INFO" "A firewall rule was just added to allow access on port $($config.PORT)."
+        Write-Host ""
     }
 } else {
-    Write-Status "OK" "Firewall rule exists"
+    Write-Host "Skipping firewall check (SYNC_SKIP_FIREWALL_CHECK=true)" -ForegroundColor Gray
+    Write-Host ""
+    # Since we skipped, we remind them to ensure it's open manually
+    Write-Status "INFO" "Ensure port $($config.PORT) is open in Windows Firewall for network access"
+    Write-Host ""
 }
-Write-Host ""
-Write-Status "INFO" "Ensure port $($config.PORT) is open in Windows Firewall for network access"
-Write-Host ""
 
 # =================================================================
 # Get local IP address
@@ -592,11 +629,34 @@ if (-not $TAILSCALE_URL -and $TAILSCALE_IP) {
 }
 
 # =================================================================
+# FINAL FALLBACK CHECK: If HTTPS is enabled via Tailscale cert but Tailscale is inactive -> Revert to HTTP
+# =================================================================
+if ($config.USE_HTTPS -eq "true" -and ($config.SSL_CERT_FILE -match "\.ts\.net" -or $config.SSL_CERT_FILE -match "tailscale")) {
+    if (-not $TAILSCALE_IP) {
+        Write-Host ""
+        Write-Host "WARNING: HTTPS is enabled with a Tailscale certificate, but Tailscale is NOT active." -ForegroundColor Yellow
+        Write-Host "         Falling back to HTTP mode." -ForegroundColor Yellow
+        Write-Host ""
+        
+        $config.USE_HTTPS = "false"
+        $env:SYNC_USE_HTTPS = "false"
+        $env:SYNC_SSL_CERT_FILE = $null
+        $env:SYNC_SSL_KEY_FILE = $null
+        
+        # Reset protocol for display
+        $protocol = "http"
+        
+        # Clear Tailscale URL if any remnant existed
+        $TAILSCALE_URL = $null
+    }
+}
+
+# =================================================================
 # Display server information
 # =================================================================
 $Host.UI.RawUI.WindowTitle = "Admin Console"
 Write-Host ""
-Write-Host "Sync-Player 1.10.2" -ForegroundColor Cyan
+Write-Host "Sync-Player 1.10.3" -ForegroundColor Cyan
 Write-Host "==========================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Settings:" -ForegroundColor Yellow

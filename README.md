@@ -132,6 +132,20 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 > Congratulations if you managed to deploy it successfully using Cloud Hosting...
 ---
 
+## Firewall Configuration
+
+By default, the `console.ps1` script will automatically:
+1.  Check if a Windows Firewall rule exists for your configured `PORT` (default 3000).
+2.  If missing, it will restart the script as Administrator to add the rule.
+
+To **disable** this behavior (e.g., if you manage firewall rules manually), add the following to your `config.env`:
+
+```properties
+SYNC_SKIP_FIREWALL_CHECK=true
+```
+
+---
+
 ## 📁 File Structure
 
 ```

@@ -178,3 +178,8 @@ res/test_thumb.jpg
 res/NODE_AV_DOCS.md
 *.key
 *.crt
+res/public/jassub/jassub.bundle.js
+res/public/jassub/jassub-worker.wasm
+res/public/jassub/jassub-worker.js
+res/public/jassub/jassub-worker-modern.wasm
+res/public/jassub/default.woff2

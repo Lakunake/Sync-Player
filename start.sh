@@ -382,10 +382,12 @@ TAILSCALE_IP=""
 TAILSCALE_URL=""
 
 if command -v tailscale &> /dev/null; then
-    # Only consider it active if we have an IP
-    TS_IP=$(tailscale ip -4 2>/dev/null)
-    if [ ! -z "$TS_IP" ]; then
-        TAILSCALE_IP="$TS_IP"
+    # Check if Tailscale is actually running (backend state)
+    if tailscale status --json 2>/dev/null | grep -q '"BackendState": "Running"'; then
+        # Only consider it active if we have an IP
+        TS_IP=$(tailscale ip -4 2>/dev/null)
+        if [ ! -z "$TS_IP" ]; then
+            TAILSCALE_IP="$TS_IP"
         
         # Try to get DNS name
         TS_DNS=$(tailscale status --json 2>/dev/null | grep -o '"DNSName": "[^"]*"' | head -n1 | cut -d'"' -f4 | sed 's/\.$//')
@@ -412,7 +414,7 @@ fi
 # Display server information
 # =================================================================
 echo ""
-echo -e "\033[36mSync-Player 1.10.2\033[0m"
+echo -e "\033[36mSync-Player 1.10.3\033[0m"
 echo -e "\033[36m==========================\033[0m"
 echo ""
 echo -e "\033[33mSettings:\033[0m"
@@ -434,22 +436,81 @@ echo -e "\033[33mAccess URLs:\033[0m"
 PROTOCOL="http"
 
 # Check for SSL certs in cert (priority), res/cert, res/, or root
+# Check for SSL certs in cert (priority), res/cert, res/, or root
+# Auto-detect if not manually enabled, OR if enabled but no file specified (optional robustness)
+
+FOUND_CERT=""
+FOUND_KEY=""
+
 if [ "$USE_HTTPS" = "true" ]; then 
     PROTOCOL="https"
-elif [ -f "cert/cert.pem" ] || [[ -n $(find cert -name "*.ts.net.crt" 2>/dev/null) ]]; then
+    # User manually enabled. Usage of specific file depends on env vars already set or server defaults.
+elif [ -f "cert/cert.pem" ]; then
     PROTOCOL="https"
     USE_HTTPS="true"
-elif [ -f "res/cert/cert.pem" ] || [[ -n $(find res/cert -name "*.ts.net.crt" 2>/dev/null) ]]; then
+    FOUND_CERT="cert/cert.pem"
+    FOUND_KEY="cert/key.pem"
+elif [ -f "res/cert/cert.pem" ]; then
     PROTOCOL="https"
     USE_HTTPS="true"
-elif [ -f "res/cert.pem" ] || [[ -n $(find res -name "*.ts.net.crt" 2>/dev/null) ]]; then
+    FOUND_CERT="res/cert/cert.pem"
+    FOUND_KEY="res/cert/key.pem"
+elif [[ -n $(find cert -name "*.ts.net.crt" 2>/dev/null | head -n1) ]]; then
     PROTOCOL="https"
     USE_HTTPS="true"
+    FOUND_CERT=$(find cert -name "*.ts.net.crt" 2>/dev/null | head -n1)
+    # Derive key (replace .crt with .key)
+    FOUND_KEY="${FOUND_CERT%.crt}.key"
+elif [[ -n $(find res/cert -name "*.ts.net.crt" 2>/dev/null | head -n1) ]]; then
     PROTOCOL="https"
     USE_HTTPS="true"
+    FOUND_CERT=$(find res/cert -name "*.ts.net.crt" 2>/dev/null | head -n1)
+    FOUND_KEY="${FOUND_CERT%.crt}.key"
+elif [ -f "res/cert.pem" ]; then
+    PROTOCOL="https"
+    USE_HTTPS="true"
+    FOUND_CERT="res/cert.pem"
+    FOUND_KEY="res/key.pem"
+fi
+
+if [ ! -z "$FOUND_CERT" ]; then
+    export SYNC_SSL_CERT_FILE="$FOUND_CERT"
+    # Only export key if we actually found/derived it and it exists (optional check)
+    if [ ! -z "$FOUND_KEY" ]; then
+        export SYNC_SSL_KEY_FILE="$FOUND_KEY"
+    fi
 fi
 
 if [ "$USE_HTTPS" = "true" ]; then PROTOCOL="https"; fi
+
+# =================================================================
+# FINAL FALLBACK CHECK: If HTTPS is enabled via Tailscale cert but Tailscale is inactive -> Revert to HTTP
+# =================================================================
+# Check if config points to a TS cert OR if we auto-detected one
+IS_TS_CERT=false
+if [[ "$SSL_CERT_FILE" == *".ts.net"* ]] || [[ "$SSL_CERT_FILE" == *"tailscale"* ]]; then
+    IS_TS_CERT=true
+elif [ "$USE_HTTPS" = "true" ] && [[ -n $(find cert res/cert res -name "*.ts.net.crt" 2>/dev/null) ]]; then
+    # If we are using HTTPS and a TS cert exists (and likely no other strictly prioritized non-TS cert invoked explicitly in config)
+    # This is a heuristic. If user forced HTTPS in config but didn't specify file, and we found TS cert, start.sh might have picked it.
+    # To be safe: if TS is inactive, and we seem to be relying on it, warn.
+    IS_TS_CERT=true
+fi
+
+if [ "$USE_HTTPS" = "true" ] && [ "$IS_TS_CERT" = "true" ]; then
+    if [ -z "$TAILSCALE_IP" ]; then
+        echo ""
+        echo -e "\033[33mWARNING: HTTPS is enabled with a Tailscale certificate, but Tailscale is NOT active.\033[0m"
+        echo -e "\033[33m         Falling back to HTTP mode.\033[0m"
+        echo ""
+        
+        USE_HTTPS="false"
+        PROTOCOL="http"
+        export SYNC_USE_HTTPS="false"
+        # We don't unset the file vars because node app might crash if arguments missing? 
+        # Actually server.js checks SYNC_USE_HTTPS first.
+    fi
+fi
 
 if [ ! -z "$TAILSCALE_URL" ]; then
     echo "- Tailscale:       $TAILSCALE_URL"

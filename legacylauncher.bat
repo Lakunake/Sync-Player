@@ -3,6 +3,8 @@ title Admin Console
 color 0a
 setlocal enabledelayedexpansion
 
+:: last updated in 19.02.26 dd.mm.yy for compatibility reasons
+
 :: =================================================================
 :: Retry Counter (resets on computer reboot via TEMP folder)
 :: =================================================================
@@ -49,41 +51,32 @@ title Admin Console - Initializing
 if not exist config.env (
     echo Creating default configuration...
     (
-        echo # Sync-Player Configuration
-        echo # Lines starting with # are comments
+        echo # ====================================
+        echo # Sync-Player Environment Configuration
+        echo # ====================================
+        echo # Format: VARIABLE_NAME=value
         echo.
-        echo # Server port (1024-49151^)
-        echo port: 3000
+        echo # Server Settings
+        echo SYNC_PORT=3000
         echo.
-        echo # Volume step percentage (1-20^)
-        echo volume_step: 5
-        echo.
-        echo # Skip seconds (1-60^)
-        echo skip_seconds: 5
-        echo.
-        echo # Join mode: sync or reset
-        echo join_mode: sync
+        echo # Playback Settings
+        echo SYNC_VOLUME_STEP=5
+        echo SYNC_SKIP_SECONDS=5
+        echo SYNC_JOIN_MODE=sync
         echo.
         echo # HTTPS Configuration
-        echo use_https: false
-        echo ssl_key_file: key.pem
-        echo ssl_cert_file: cert.pem
+        echo SYNC_USE_HTTPS=false
+        echo SYNC_SSL_KEY_FILE=key.pem
+        echo SYNC_SSL_CERT_FILE=cert.pem
         echo.
-        echo # BSL-S2 (Both Side Local Sync Stream^) Configuration
-        echo # Mode: 'any' = BSL-S2 active if ANY client has the local file
-        echo #       'all' = BSL-S2 only active if ALL clients have the local file
-        echo bsl_s2_mode: any
+        echo # BSL-S2 Configuration
+        echo SYNC_BSL_MODE=any
         echo.
-        echo # Video Autoplay Configuration
-        echo # Set to true to automatically play videos when loaded
-        echo # Set to false to start videos paused
-        echo video_autoplay: false
-        echo.
-        echo # Admin Fingerprint Lock
-        echo # When enabled, only the first machine to access /admin will be allowed
-        echo # The fingerprint is stored in admin_fingerprint.txt
-        echo # Set to true to enable, false to allow any machine to access admin
-        echo admin_fingerprint_lock: false
+        echo # Features
+        echo SYNC_VIDEO_AUTOPLAY=false
+        echo SYNC_ADMIN_FINGERPRINT_LOCK=false
+        echo SYNC_CHAT_ENABLED=true
+        echo SYNC_SERVER_MODE=false
     ) > config.env
     echo Default config created with all available options
 )
@@ -102,28 +95,28 @@ if not exist media (
 title Admin Console - Checking Dependencies
 echo Checking required dependencies...
 
-:: Check Node.js dependencies
+:: Check Node.js dependencies (in res/ directory)
 set MISSING_DEPS=0
-if not exist node_modules (
+if not exist res\node_modules (
     set MISSING_DEPS=1
     color 06
     echo [MISSING]: Node.js dependencies (express, socket.io, etc.)
     color 0a
 ) else (
     echo Checking for specific dependencies...
-    if not exist "node_modules\express" (
+    if not exist "res\node_modules\express" (
         set MISSING_DEPS=1
         color 06
         echo [MISSING]: express package
         color 0a
     )
-    if not exist "node_modules\socket.io" (
+    if not exist "res\node_modules\socket.io" (
         set MISSING_DEPS=1
         color 06
         echo [MISSING]: socket.io package
         color 0a
     )
-    if not exist "node_modules\helmet" (
+    if not exist "res\node_modules\helmet" (
         set MISSING_DEPS=1
         color 06
         echo [MISSING]: helmet package
@@ -158,7 +151,9 @@ if %MISSING_DEPS% equ 1 (
     pause >nul
     echo.
     echo Installing Node.js dependencies...
+    pushd res
     call npm install
+    popd
     
     if %errorlevel% neq 0 (
         color 0C
@@ -248,8 +243,20 @@ set USE_HTTPS=false
 set BSL_S2_MODE=any
 set ADMIN_LOCK=false
 
+:: Support both new SYNC_KEY=value AND legacy key: value format
 if exist config.env (
-    for /f "tokens=1,* delims=: " %%a in ('type config.env ^| findstr /v "^#"') do (
+    :: Try new format first (SYNC_KEY=value)
+    for /f "tokens=1,* delims==" %%a in ('type config.env ^| findstr /v "^#" ^| findstr "="') do (
+        if "%%a"=="SYNC_PORT" set PORT=%%b
+        if "%%a"=="SYNC_VOLUME_STEP" set VOLUME_STEP=%%b
+        if "%%a"=="SYNC_SKIP_SECONDS" set SKIP_SECONDS=%%b
+        if "%%a"=="SYNC_JOIN_MODE" set JOIN_MODE=%%b
+        if "%%a"=="SYNC_USE_HTTPS" set USE_HTTPS=%%b
+        if "%%a"=="SYNC_BSL_MODE" set BSL_S2_MODE=%%b
+        if "%%a"=="SYNC_ADMIN_FINGERPRINT_LOCK" set ADMIN_LOCK=%%b
+    )
+    :: Fallback: try legacy format (key: value)
+    for /f "tokens=1,* delims=: " %%a in ('type config.env ^| findstr /v "^#" ^| findstr ":"') do (
         if "%%a"=="port" set PORT=%%b
         if "%%a"=="volume_step" set VOLUME_STEP=%%b
         if "%%a"=="skip_seconds" set SKIP_SECONDS=%%b
@@ -306,7 +313,7 @@ if "%LOCAL_IP%"=="" set LOCAL_IP=localhost
 :: =================================================================
 title Admin Console
 echo.
-echo Sync-Player 1.10.0
+echo Sync-Player 1.10.3
 echo ==========================
 echo.
 echo Settings:
@@ -343,7 +350,7 @@ echo [DEBUG]: Starting server with port %PORT%...
 :: Clear retry counter on successful start
 del "%RETRY_FILE%" >nul 2>&1
 
-node res\server.js %LOCAL_IP%
+node --env-file-if-exists=config.env res\server.js %LOCAL_IP%
 if %errorlevel% neq 0 (
     echo.
     color 0C
