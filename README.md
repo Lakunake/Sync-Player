@@ -83,8 +83,8 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 - File browser for media management
 - FFmpeg generated thumbnail for video from the first third of the video
 - Tab to use various ffmpeg tools
-<img width="1919" height="907" alt="image" src="https://github.com/user-attachments/assets/03b9b377-24c5-4ea3-a851-ab3386ddbc75" />
-<img width="1919" height="902" alt="image" src="https://github.com/user-attachments/assets/dcd825b6-322f-45aa-969e-b434a133a821" />
+<img width="1919" height="909" alt="image" src="https://github.com/user-attachments/assets/16706deb-cc7f-4ea4-8830-1dc88f141eeb" />
+<img width="1919" height="909" alt="image" src="https://github.com/user-attachments/assets/26cda4d9-69e0-4441-a218-e0e05c085b0e" />
 <img width="1832" height="933" alt="image" src="https://github.com/user-attachments/assets/359ef7b1-b0c7-40d4-a734-fd16cd6c78e5" />
 
 > [!NOTE]
