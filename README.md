@@ -16,6 +16,7 @@ A FULLY synchronized non-coder friendly HTML5 video player originally for Minecr
     * [Method 1: Direct Hosting](#method-1-lan-or-public-ip-direct-hosting)
     * [Method 2: Tailscale](#method-2-tailscale-virtual-lan)
     * [Method 3: Cloud Hosting](#method-3-cloud-hosting-render-heroku-replit-etc)
+* [Firewall Warning](#firewall-warning)
 * [File Structure](#-file-structure)
 * [Configuration](#️-configuration)
 * [License](#license)
@@ -132,7 +133,7 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 > Congratulations if you managed to deploy it successfully using Cloud Hosting...
 ---
 
-## Firewall Configuration
+## Firewall Warning
 
 By default, the `console.ps1` script will automatically:
 1.  Check if a Windows Firewall rule exists for your configured `PORT` (default 3000).
