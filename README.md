@@ -104,8 +104,8 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 > [!NOTE]
 > Though many security features are implemented, direct hosting can still be risky for attacks
 
-1. Run `run.bat` in your folder
-2. Make sure your selected port is open in your firewall/router
+1. Make sure your selected port is open in your firewall/router
+2. Run `run.bat` in your folder
 3. Access the video player from devices at the provided links
 4. Access admin panel at `http://your-ip:port/admin` and go to `http://your-ip:port` in minecraft
 
