@@ -414,7 +414,7 @@ fi
 # Display server information
 # =================================================================
 echo ""
-echo -e "\033[36mSync-Player 1.10.3\033[0m"
+echo -e "\033[36mSync-Player 1.10.4\033[0m"
 echo -e "\033[36m==========================\033[0m"
 echo ""
 echo -e "\033[33mSettings:\033[0m"

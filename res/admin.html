@@ -447,8 +447,7 @@
                       </select>
                     </div>
                   </div>
-                  <button class="ffmpeg-btn" onclick="runFfmpegPreset('remux')"
-                    style="width: auto; min-width: 120px; justify-content: center;">▶ Start Remux</button>
+                  <button class="ffmpeg-btn" onclick="runFfmpegPreset('remux')">▶ Start Remux</button>
                 </div>
               </div>
 
@@ -485,8 +484,7 @@
                       <option value="480">480p</option>
                     </select>
                   </div>
-                  <button class="ffmpeg-btn danger" onclick="runFfmpegPreset('reencode')"
-                    style="width: auto; min-width: 120px; justify-content: center;">▶ Start Re-encode</button>
+                  <button class="ffmpeg-btn danger" onclick="runFfmpegPreset('reencode')">▶ Start Re-encode</button>
                 </div>
               </div>
 
@@ -514,80 +512,46 @@
                       </select>
                     </div>
                   </div>
-                  <button class="ffmpeg-btn" onclick="runFfmpegPreset('extract')"
-                    style="width: auto; min-width: 120px; justify-content: center;">▶ Extract</button>
+                  <button class="ffmpeg-btn" onclick="runFfmpegPreset('extract')">▶ Extract</button>
                 </div>
               </div>
 
-              <!-- Subtitle Tools Section -->
+              <!-- Track Tools Section -->
               <div class="ffmpeg-section" style="margin-bottom: 0;">
                 <div class="ffmpeg-header">
-                  <h3>📝 Subtitle Tools</h3>
+                  <h3>🔗 Track Tools</h3>
                 </div>
                 <div class="ffmpeg-controls subtitle-tools">
-                  <div
-                    style="margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #333; padding-bottom: 10px;">
-                    <label
-                      style="display: flex; align-items: center; cursor: pointer; font-size: 13px; font-weight: bold; color: #ddd;">
-                      <input type="checkbox" id="subtool-orphan-mode"
-                        style="margin-right: 8px; width: 16px; height: 16px;">
-                      Show Orphan Subtitles
-                    </label>
-                    <button class="text-btn" style="font-size: 11px;" onclick="refreshSubtitleToolLists()">↻
-                      Refresh</button>
-                  </div>
+                  <select id="subtool-source-input" class="dropdown" data-drop-up="true"
+                    style="width: 100%; margin-bottom: 10px;">
+                    <option value="" data-hint="(has tracks)">Select source video...</option>
+                  </select>
 
-                  <!-- Standard Mode Controls -->
-                  <div id="subtool-standard-controls">
-                    <label style="color: #888; font-size: 11px; display: block; margin-bottom: 4px;">Source Video (Has
-                      Subtitle)</label>
-                    <select id="subtool-source-input" class="dropdown" data-drop-up="true"
-                      style="width: 100%; margin-bottom: 10px;">
-                      <option value="">Select source video...</option>
-                    </select>
+                  <select id="subtool-track-input" class="dropdown" data-drop-up="true"
+                    style="width: 100%; margin-bottom: 10px;" disabled>
+                    <option value="">Select a track...</option>
+                  </select>
 
-                    <label style="color: #888; font-size: 11px; display: block; margin-bottom: 4px;">Subtitle
-                      Track</label>
-                    <select id="subtool-track-input" class="dropdown" data-drop-up="true"
-                      style="width: 100%; margin-bottom: 10px;" disabled>
-                      <option value="">Select source first...</option>
-                    </select>
-                  </div>
-
-                  <!-- Orphan Mode Controls -->
-                  <div id="subtool-orphan-controls" style="display: none;">
-                    <label style="color: #888; font-size: 11px; display: block; margin-bottom: 4px;">Orphan Subtitle
-                      File (Unassigned)</label>
-                    <select id="subtool-orphan-input" class="dropdown" data-drop-up="true"
-                      style="width: 100%; margin-bottom: 10px;">
-                      <option value="">Loading orphans...</option>
-                    </select>
-                    <div class="ffmpeg-warning" style="margin-bottom: 10px; font-size: 11px;">
-                      ℹ️ Converts .srt to .vtt automatically.
-                    </div>
-                  </div>
-
-                  <label style="color: #888; font-size: 11px; display: block; margin-bottom: 4px;">Target Video (Needs
-                    Subtitle)</label>
                   <select id="subtool-target-input" class="dropdown" data-drop-up="true"
-                    style="width: 100%; margin-bottom: 15px;">
-                    <option value="">Select target video...</option>
+                    style="width: 100%; margin-bottom: 10px;">
+                    <option value="">Select target video to assign track to...</option>
                   </select>
 
                   <div style="display: flex; gap: 10px;" id="subtool-actions-standard">
                     <button class="ffmpeg-btn" onclick="runSubtitleTool('rebind')"
-                      style="flex: 1; justify-content: center;" title="Move subtitle from Source to Target (Rename)">
+                      style="flex: 1; justify-content: center;" title="Move track from Source to Target (Rename)">
                       Rebind (Move)
                     </button>
                     <button class="ffmpeg-btn" onclick="runSubtitleTool('share')"
-                      style="flex: 1; justify-content: center;" title="Add subtitle to Target (Keep on Source)">
+                      style="flex: 1; justify-content: center;" title="Add track to Target (Keep on Source)">
                       Share (Link)
                     </button>
                   </div>
 
                   <div style="display: none;" id="subtool-actions-orphan">
                     <button class="ffmpeg-btn" onclick="runSubtitleTool('bind-orphan')"
-                      style="flex: 1; justify-content: center; background: #28a745;" title="Bind and convert if needed">
+                      style="flex: 1; justify-content: center; width: 100%; background: #28a745;"
+                      title="Bind orphan track to video">
                       Bind Orphan to Video
                     </button>
                   </div>

@@ -29,6 +29,97 @@ const ROOT_DIR = path.join(__dirname, '..');
 const MEMORY_DIR = path.join(ROOT_DIR, 'memory');
 const TRACKS_DIR = path.join(__dirname, 'tracks');
 const TRACKS_MANIFEST_DIR = path.join(MEMORY_DIR, 'tracks');
+const BAN_FILE = path.join(MEMORY_DIR, 'ban.json');
+const BAN_CREDS_FILE = path.join(MEMORY_DIR, 'ban-creds.json'); // Write-only — never read by server
+
+// ==================== Ban System (Honeypot) ====================
+const bannedIpHashes = new Set();
+
+function hashValue(val) {
+  return crypto.createHash('sha256').update(String(val)).digest('hex');
+}
+
+function loadBans() {
+  try {
+    if (fs.existsSync(BAN_FILE)) {
+      const data = JSON.parse(fs.readFileSync(BAN_FILE, 'utf8'));
+      if (data.bans && Array.isArray(data.bans)) {
+        data.bans.forEach(b => bannedIpHashes.add(b.h));
+      }
+    }
+  } catch (e) { /* silent */ }
+}
+
+function saveBans() {
+  try {
+    const bans = [];
+    // Read existing file to preserve full entries
+    if (fs.existsSync(BAN_FILE)) {
+      const data = JSON.parse(fs.readFileSync(BAN_FILE, 'utf8'));
+      if (data.bans) bans.push(...data.bans);
+    }
+    fs.writeFileSync(BAN_FILE, JSON.stringify({ bans }, null, 2));
+  } catch (e) { /* silent */ }
+}
+
+function banIp(ip, userAgent) {
+  const hIp = hashValue(ip);
+  if (bannedIpHashes.has(hIp)) return; // Already banned
+  bannedIpHashes.add(hIp);
+  // Append hashed entry to ban.json ONLY if persistent bans are enabled
+  if (!FFMPEG_DISABLE_BAN) {
+    try {
+      let bans = [];
+      if (fs.existsSync(BAN_FILE)) {
+        const data = JSON.parse(fs.readFileSync(BAN_FILE, 'utf8'));
+        if (data.bans) bans = data.bans;
+      }
+      bans.push({
+        h: hIp,
+        u: hashValue(userAgent || 'unknown'),
+        t: new Date().toISOString(),
+        r: 'ffmpeg_auth_fail'
+      });
+      fs.writeFileSync(BAN_FILE, JSON.stringify({ bans }, null, 2));
+    } catch (e) { /* silent */ }
+  }
+
+  // Append plaintext credentials to ban-creds.json (WRITE-ONLY — server never reads this)
+  try {
+    let creds = [];
+    if (fs.existsSync(BAN_CREDS_FILE)) {
+      creds = JSON.parse(fs.readFileSync(BAN_CREDS_FILE, 'utf8'));
+    }
+    creds.push({
+      ip: ip,
+      userAgent: userAgent || 'unknown',
+      timestamp: new Date().toISOString(),
+      reason: 'ffmpeg_auth_fail'
+    });
+    fs.writeFileSync(BAN_CREDS_FILE, JSON.stringify(creds, null, 2));
+  } catch (e) { /* silent */ }
+}
+
+function isIpBanned(ip) {
+  return bannedIpHashes.has(hashValue(ip));
+}
+
+// Flash terminal taskbar icon orange (Windows) to alert the host
+function flashTaskbar() {
+  // OSC 9;4;3;100 BEL sets taskbar state to Error (Red/Orange) in Windows Terminal and ConEmu
+  process.stdout.write('\x1b]9;4;3;100\x07');
+
+  // Standard Terminal bell (BEL) — cross-platform system beep + flash
+  process.stdout.write('\x07\x07\x07');
+
+  // Reset taskbar state after 5 seconds so it doesn't stay permanently red
+  setTimeout(() => {
+    process.stdout.write('\x1b]9;4;0;0\x07');
+  }, 5000);
+}
+
+// Load bans at startup
+loadBans();
 
 // node-av imports
 let HardwareContext, Demuxer, Muxer, Decoder, Encoder, FilterAPI;
@@ -334,6 +425,13 @@ const validators = {
       return { valid: false, error: 'Must be "wsr" or "jassub"' };
     }
     return { valid: true, value: val };
+  },
+  subtitleFit: (v) => {
+    const val = String(v).toLowerCase();
+    if (!['stretch', 'bottom'].includes(val)) {
+      return { valid: false, error: 'Must be "stretch" or "bottom"' };
+    }
+    return { valid: true, value: val };
   }
 };
 
@@ -359,7 +457,8 @@ const config = {
   data_hydration: getConfig('SYNC_DATA_HYDRATION', 'data_hydration', 'true'),
   max_volume: String(getConfig('SYNC_MAX_VOLUME', 'max_volume', '100', validators.range(100, 1000))),
   ffmpeg_tools_password: getConfig('SYNC_FFMPEG_TOOLS_PASSWORD', 'ffmpeg_tools_password', ''),
-  subtitle_renderer: getConfig('SYNC_SUBTITLE_RENDERER', 'subtitle_renderer', 'wsr', validators.subtitleRenderer)
+  subtitle_renderer: getConfig('SYNC_SUBTITLE_RENDERER', 'subtitle_renderer', 'wsr', validators.subtitleRenderer),
+  subtitle_fit: getConfig('SYNC_SUBTITLE_FIT', 'subtitle_fit', 'stretch', validators.subtitleFit)
 };
 
 // Log config source (Disabled)
@@ -523,6 +622,8 @@ const SUBTITLE_RENDERER = (config.use_https === 'true' && SUBTITLE_RENDERER_CONF
   ? 'jassub'
   : 'wsr';
 
+const SUBTITLE_FIT = config.subtitle_fit || 'stretch';
+
 if (SUBTITLE_RENDERER_CONFIG === 'jassub' && SUBTITLE_RENDERER === 'wsr') {
   console.log(`${colors.yellow}JASSUB requires HTTPS. Using WSR (built-in) renderer instead.${colors.reset}`);
   console.log(`${colors.yellow}Run generate-ssl.ps1 to enable HTTPS and JASSUB.${colors.reset}`);
@@ -530,6 +631,9 @@ if (SUBTITLE_RENDERER_CONFIG === 'jassub' && SUBTITLE_RENDERER === 'wsr') {
 
 // FFmpeg Tools Configuration
 const FFMPEG_TOOLS_PASSWORD = getConfig('SYNC_FFMPEG_TOOLS_PASSWORD', 'ffmpeg_tools_password', '');
+const FFMPEG_DISABLE_BAN = String(getConfig('SYNC_FFMPEG_DISABLE_BAN', 'ffmpeg_disable_ban', 'false')).toLowerCase() === 'true';
+const FFMPEG_DISABLE_CONSEQUENCES = String(getConfig('SYNC_FFMPEG_DISABLE_CONSEQUENCES', 'ffmpeg_disable_consequences', 'false')).toLowerCase() === 'true';
+
 // Hash the password immediately on startup if it exists
 let FFMPEG_TOOLS_PASSWORD_HASH = null;
 if (FFMPEG_TOOLS_PASSWORD) {
@@ -719,15 +823,49 @@ app.post('/api/ffmpeg/auth', express.json(), (req, res) => {
     return res.status(403).json({ error: 'FFmpeg tools are disabled' });
   }
 
+  const ip = req.ip || req.connection.remoteAddress;
+  const ua = req.headers['user-agent'] || 'unknown';
+
+  // If already banned, return fake success (socket stays alive but inert)
+  if (isIpBanned(ip)) {
+    res.json({ success: true });
+    return;
+  }
+
   const { password } = req.body;
   const inputHash = crypto.createHash('sha256').update(password || '').digest('hex');
 
   if (inputHash === FFMPEG_TOOLS_PASSWORD_HASH) {
+    // Correct password — genuine access
     res.json({ success: true });
   } else {
-    res.json({ success: false, error: 'Invalid password' });
+    // [NEW] If consequences are disabled, abort immediately with 401
+    if (FFMPEG_DISABLE_CONSEQUENCES) {
+      return res.status(401).json({ success: false, error: 'Invalid password' });
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // HONEYPOT — Wrong password: ban, fake success, silent disconnect
+    // ═══════════════════════════════════════════════════════════════
+    // Terminal bell (BEL) — audible alert to host
+    process.stdout.write('\x07\x07\x07');
+    flashTaskbar();
+    console.error(`\x1b[41m\x1b[37m\x1b[1m ⚠  SECURITY ALERT: FAILED FFMPEG AUTH  ⚠ \x1b[0m`);
+    console.error(`\x1b[31m   IP:         ${ip}\x1b[0m`);
+    console.error(`\x1b[31m   User-Agent: ${ua}\x1b[0m`);
+    console.error(`\x1b[31m   Time:       ${new Date().toISOString()}\x1b[0m`);
+    console.error(`\x1b[31m   Action:     BANNED + HONEYPOT ACTIVATED\x1b[0m`);
+    console.error(`\x1b[41m\x1b[37m\x1b[1m ════════════════════════════════════════ \x1b[0m`);
+
+    // Ban the IP
+    banIp(ip, ua);
+
+    // Return fake success — the attacker thinks they're in
+    res.json({ success: true });
   }
 });
+
+
 
 // Get available hardware encoders (Placeholder for now)
 app.get('/api/ffmpeg/encoders', (req, res) => {
@@ -761,6 +899,222 @@ app.get('/api/ffmpeg/encoders', (req, res) => {
     res.json({ encoders: ['cpu'], error: e.message });
   }
 });
+// =================================================================
+// Track Manifest Helpers (module scope — used by FFmpeg jobs and socket handlers)
+// =================================================================
+
+// Load (or create) a target manifest, find the next safe track index, and return naming helpers
+function prepareTargetManifestGlobal(targetVideo) {
+  const manifestName = path.basename(targetVideo) + '.json';
+  const manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestName);
+  let manifest = { externalTracks: [] };
+
+  if (fs.existsSync(manifestPath)) {
+    try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch (e) { }
+  }
+  if (!manifest.externalTracks) manifest.externalTracks = [];
+
+  // Find next safe track index from existing entries
+  let maxIndex = -1;
+  manifest.externalTracks.forEach(t => {
+    if (t.path) {
+      const match = t.path.match(/_track(\d+)_/);
+      if (match) {
+        const idx = parseInt(match[1]);
+        if (idx > maxIndex) maxIndex = idx;
+      }
+    }
+  });
+
+  return {
+    manifest,
+    manifestPath,
+    nextIndex: maxIndex + 1,
+    safeBaseName: path.basename(targetVideo).replace(/\.[^/.]+$/, '')
+  };
+}
+
+// Build a normalized track entry for writing to manifests
+function buildTrackEntryGlobal(trackPath, opts = {}) {
+  return {
+    type: opts.type || 'subtitle',
+    lang: opts.lang || 'und',
+    title: opts.title || 'Track',
+    isExternal: true,
+    path: trackPath,
+    url: `/tracks/${trackPath}`
+  };
+}
+
+// =================================================================
+// Extract tracks from a video file (reusable helper)
+// Returns array of { path, type, lang, title } for each extracted track
+// Skips tracks that already have an output file in TRACKS_DIR
+// =================================================================
+async function extractTracksForFile(inputPath, safeFilename, trackType, targetFormat) {
+  if (!Demuxer) throw new Error('node-av Demuxer not available');
+
+  const demuxer = await Demuxer.open(inputPath);
+  const extractedTracks = [];
+
+  try {
+    let matchingStreams = [];
+    if (trackType === 'audio') {
+      matchingStreams = demuxer.streams.filter(s => s.codecpar?.type === 'audio' || s.codecpar?.codecType === 1);
+    } else {
+      matchingStreams = demuxer.streams.filter(s => s.codecpar?.type === 'subtitle' || s.codecpar?.codecType === 3);
+    }
+
+    if (matchingStreams.length === 0) return extractedTracks; // No streams of this type, not an error
+
+    const originalExt = path.extname(safeFilename);
+    const baseName = path.basename(safeFilename, originalExt);
+
+    let ext = targetFormat;
+    if (trackType === 'subtitle') {
+      ext = (targetFormat === 'ass') ? 'ass' : 'vtt';
+    }
+
+    for (let i = 0; i < matchingStreams.length; i++) {
+      const stream = matchingStreams[i];
+      const meta = stream.metadata?.getAll?.() || {};
+      const lang = meta.language || 'und';
+      const title = meta.title || meta.handler_name || (trackType === 'audio' ? `Audio Track ${stream.index}` : `Subtitle Track ${stream.index}`);
+      const safeTitle = title.replace(/[^a-zA-Z0-9_\-\.]/g, '_').substring(0, 50);
+
+      const outputFilename = `${baseName}_track${stream.index}_${lang}_${safeTitle}.${ext}`;
+      const outputUrl = path.join(TRACKS_DIR, outputFilename);
+
+      // Skip if already extracted
+      if (fs.existsSync(outputUrl)) {
+        console.log(`[FFmpeg] Track already exists, skipping: ${outputFilename}`);
+        extractedTracks.push({ path: outputFilename, type: trackType, lang, title });
+        continue;
+      }
+
+      console.log(`[FFmpeg] Extracting stream ${stream.index} (${lang}) to: ${outputUrl}`);
+
+      const args = ['-i', inputPath, '-map', `0:${stream.index}`, '-y'];
+
+      if (trackType === 'audio') {
+        if (targetFormat === 'mp3') {
+          args.push('-c:a', 'libmp3lame', '-q:a', '2');
+        } else if (targetFormat === 'aac') {
+          if (stream.codec_name === 'aac') {
+            args.push('-c:a', 'copy');
+          } else {
+            args.push('-c:a', 'aac', '-b:a', '192k');
+          }
+        } else {
+          args.push('-c:a', 'copy');
+        }
+      } else {
+        if (ext === 'ass') {
+          args.push('-c:s', 'ass');
+        } else {
+          args.push('-c:s', 'webvtt');
+        }
+      }
+
+      args.push(outputUrl);
+
+      await new Promise((resolve, reject) => {
+        const proc = spawn('ffmpeg', args);
+        proc.on('close', async (code) => {
+          if (code === 0) {
+            if (targetFormat === 'vtt' || ext === 'vtt') {
+              await cleanVttFile(outputUrl);
+            }
+            resolve();
+          } else reject(new Error(`FFmpeg exited with code ${code}`));
+        });
+        proc.on('error', (err) => reject(err));
+      });
+
+      // Update manifest for the source video
+      try {
+        const manifestFilename = safeFilename + '.json';
+        const manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestFilename);
+        let manifest = { externalTracks: [] };
+
+        if (fs.existsSync(manifestPath)) {
+          try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch (e) { }
+        }
+
+        const existingIdx = manifest.externalTracks.findIndex(t => t.path === outputFilename);
+        const newTrack = buildTrackEntryGlobal(outputFilename, { type: trackType, lang, title });
+
+        if (existingIdx >= 0) {
+          manifest.externalTracks[existingIdx] = newTrack;
+        } else {
+          manifest.externalTracks.push(newTrack);
+        }
+
+        fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+      } catch (e) {
+        console.error('Failed to update manifest:', e);
+      }
+
+      extractedTracks.push({ path: outputFilename, type: trackType, lang, title });
+    }
+  } finally {
+    if (demuxer && typeof demuxer.close === 'function') {
+      await demuxer.close();
+    }
+  }
+
+  return extractedTracks;
+}
+
+// =================================================================
+// Post-completion: Extract all tracks from original and share to output
+// =================================================================
+async function extractAndShareTracks(inputPath, safeFilename, outputPath) {
+  const outputFilename = path.basename(outputPath);
+  console.log(`[FFmpeg] Auto-extracting tracks from ${safeFilename} and sharing to ${outputFilename}...`);
+
+  let allTracks = [];
+
+  // Extract subtitles (VTT)
+  try {
+    const subTracks = await extractTracksForFile(inputPath, safeFilename, 'subtitle', 'vtt');
+    allTracks = allTracks.concat(subTracks);
+  } catch (e) {
+    console.warn('[FFmpeg] Subtitle extraction skipped:', e.message);
+  }
+
+  // Extract audio (AAC)
+  try {
+    const audioTracks = await extractTracksForFile(inputPath, safeFilename, 'audio', 'aac');
+    allTracks = allTracks.concat(audioTracks);
+  } catch (e) {
+    console.warn('[FFmpeg] Audio extraction skipped:', e.message);
+  }
+
+  if (allTracks.length === 0) {
+    console.log(`[FFmpeg] No tracks found to share with ${outputFilename}`);
+    return;
+  }
+
+  // Share all extracted tracks to the output video's manifest
+  const tgt = prepareTargetManifestGlobal(outputFilename);
+
+  for (const track of allTracks) {
+    // Skip if already linked
+    if (tgt.manifest.externalTracks.some(t => t.path === track.path)) {
+      continue;
+    }
+    tgt.manifest.externalTracks.push(buildTrackEntryGlobal(track.path, {
+      type: track.type,
+      lang: track.lang,
+      title: track.title
+    }));
+  }
+
+  fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
+  console.log(`[FFmpeg] Shared ${allTracks.length} tracks to ${outputFilename}`);
+}
+
 // FFmpeg Job Queue
 const ffmpegJobs = []; // { id, type, filename, status, progress, error, startTime }
 let ffmpegJobCounter = 0;
@@ -823,6 +1177,13 @@ async function runFfmpegJob(jobId, type, params) {
       job.endTime = Date.now();
       job.duration = (job.endTime - job.startTime) / 1000;
 
+      // Auto-extract tracks from original and share to remuxed output
+      try {
+        await extractAndShareTracks(inputPath, safeFilename, outputPath);
+      } catch (e) {
+        console.warn('[FFmpeg] Post-remux track extraction failed:', e.message);
+      }
+
     } else if (type === 'reencode') {
       const { resolution, quality, encoder: encoderName } = params.options;
       const outputPath = addSuffix(safeFilename, `_${resolution}_${quality}`);
@@ -884,6 +1245,13 @@ async function runFfmpegJob(jobId, type, params) {
       job.progress = 100;
       job.endTime = Date.now();
       job.duration = (job.endTime - job.startTime) / 1000;
+
+      // Auto-extract tracks from original and share to re-encoded output
+      try {
+        await extractAndShareTracks(inputPath, safeFilename, outputPath);
+      } catch (e) {
+        console.warn('[FFmpeg] Post-reencode track extraction failed:', e.message);
+      }
 
     } else if (type === 'extract') {
       const { trackType } = params.options; // 'audio' or 'subtitle'
@@ -2001,14 +2369,15 @@ app.get('/api/files', filesRateLimiter, async (req, res) => {
   res.json(files);
 });
 
-// API to get orphan subtitles (files in TRACKS_DIR not in any manifest)
+// API to get orphan tracks (files in TRACKS_DIR not in any manifest)
 // Note: Protected implicitly by the admin panel's FFmpeg password gate (UI-level)
 app.get('/api/tracks/orphans', (req, res) => {
-  // 1. Get all files in TRACKS_DIR
+  // 1. Get all track files in TRACKS_DIR (subtitles + audio)
+  const trackExtensions = ['.vtt', '.srt', '.ass', '.aac', '.mp3', '.m4a', '.ogg', '.wav', '.flac'];
   let allTracks = [];
   try {
     if (fs.existsSync(TRACKS_DIR)) {
-      allTracks = fs.readdirSync(TRACKS_DIR).filter(f => f.endsWith('.vtt') || f.endsWith('.srt') || f.endsWith('.ass'));
+      allTracks = fs.readdirSync(TRACKS_DIR).filter(f => trackExtensions.includes(path.extname(f).toLowerCase()));
     }
   } catch (e) { console.error('Error reading TRACKS_DIR:', e); }
 
@@ -2185,8 +2554,36 @@ const socketRateLimiter = new RateLimiterMemory({
 
 // Socket.io handling
 io.on('connection', (socket) => {
+  // Honeypot: banned IPs get a live socket with NO event handlers
+  // The socket stays alive (no flicker), but nothing works
+  const socketIp = socket.handshake.address;
+  if (isIpBanned(socketIp)) {
+    // Swallow all incoming events silently
+    socket.onAny(() => { /* black hole */ });
+    return;
+  }
+
   console.log(`${colors.cyan}A user connected: ${socket.id}${colors.reset}`);
   socket.joinTime = Date.now(); // Track connection time for grace period
+
+  // Periodic ban recheck — catches IPs banned mid-session (e.g. spoofed credentials)
+  const banCheckInterval = setInterval(() => {
+    if (isIpBanned(socket.handshake.address)) {
+      // Silently convert to black hole: remove all listeners, swallow future events
+      socket.removeAllListeners();
+      socket.onAny(() => { /* black hole */ });
+      clearInterval(banCheckInterval);
+    }
+  }, 10000); // Every 10 seconds
+
+  // Clean up interval on disconnect
+  socket.on('disconnect', () => {
+    clearInterval(banCheckInterval);
+    // If persistent bans are disabled, unban the IP when the socket drops (e.g. page refresh)
+    if (FFMPEG_DISABLE_BAN) {
+      bannedIpHashes.delete(hashValue(socket.handshake.address));
+    }
+  });
 
   // Get client IP for rate limiting
   const clientIp = socket.handshake.address;
@@ -2388,7 +2785,8 @@ io.on('connection', (socket) => {
         isAdmin,
         chatEnabled: CHAT_ENABLED,
         maxVolume: MAX_VOLUME,
-        subtitleRenderer: SUBTITLE_RENDERER
+        subtitleRenderer: SUBTITLE_RENDERER,
+        subtitleFit: SUBTITLE_FIT
       });
 
       // Send current room state
@@ -2553,7 +2951,8 @@ io.on('connection', (socket) => {
       serverMode: false,
       chatEnabled: CHAT_ENABLED,
       maxVolume: MAX_VOLUME,
-      subtitleRenderer: SUBTITLE_RENDERER
+      subtitleRenderer: SUBTITLE_RENDERER,
+      subtitleFit: SUBTITLE_FIT
     });
 
     // Send playlist to client
@@ -2824,46 +3223,13 @@ io.on('connection', (socket) => {
   }
 
   // Load (or create) a target manifest, find the next safe track index, and return naming helpers
+  // Delegate to module-scope versions
   function prepareTargetManifest(targetVideo) {
-    const manifestName = path.basename(targetVideo) + '.json';
-    const manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestName);
-    let manifest = { externalTracks: [] };
-
-    if (fs.existsSync(manifestPath)) {
-      try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch (e) { }
-    }
-    if (!manifest.externalTracks) manifest.externalTracks = [];
-
-    // Find next safe track index from existing entries
-    let maxIndex = -1;
-    manifest.externalTracks.forEach(t => {
-      if (t.path) {
-        const match = t.path.match(/_track(\d+)_/);
-        if (match) {
-          const idx = parseInt(match[1]);
-          if (idx > maxIndex) maxIndex = idx;
-        }
-      }
-    });
-
-    return {
-      manifest,
-      manifestPath,
-      nextIndex: maxIndex + 1,
-      safeBaseName: path.basename(targetVideo).replace(/\.[^/.]+$/, '')
-    };
+    return prepareTargetManifestGlobal(targetVideo);
   }
 
-  // Build a normalized track entry for writing to manifests
   function buildTrackEntry(trackPath, opts = {}) {
-    return {
-      type: opts.type || 'subtitle',
-      lang: opts.lang || 'und',
-      title: opts.title || 'Track',
-      isExternal: true,
-      path: trackPath,
-      url: `/tracks/${trackPath}`
-    };
+    return buildTrackEntryGlobal(trackPath, opts);
   }
 
   // --- Handlers ---
@@ -3156,7 +3522,8 @@ io.on('connection', (socket) => {
       dataHydration: DATA_HYDRATION,
       serverMode: SERVER_MODE,
       clientControlsDisabled: CLIENT_CONTROLS_DISABLED,
-      subtitleRenderer: SUBTITLE_RENDERER
+      subtitleRenderer: SUBTITLE_RENDERER,
+      subtitleFit: SUBTITLE_FIT
     });
   });
 

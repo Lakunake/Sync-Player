@@ -1,5 +1,6 @@
 const video = document.getElementById('video');
 const preloadVideo = document.getElementById('preload-video');
+const externalAudio = document.getElementById('external-audio');
 const imageDisplay = document.getElementById('image-display');
 const waitingMessage = document.getElementById('waiting-message');
 const statusEl = document.getElementById('status');
@@ -12,6 +13,7 @@ let subtitleRenderer;
 let jassubInstance = null; // JASSUB instance for ASS rendering (when SUBTITLE_RENDERER=jassub)
 let canvasSupervisor = null; // MutationObserver to enforce canvas styles
 let subtitleRendererMode = 'wsr'; // 'wsr' (built-in) or 'jassub' (libass)
+let subtitleFitMode = 'stretch'; // 'stretch' or 'bottom'
 
 // Helper to check if a file is an image
 const imageExtensions = ['.png', '.jpg', '.jpeg', '.webp'];
@@ -416,8 +418,13 @@ socket.on('config', (config) => {
   // Subtitle renderer mode from config
   if (config.subtitleRenderer && ['wsr', 'jassub'].includes(config.subtitleRenderer)) {
     subtitleRendererMode = config.subtitleRenderer;
-    console.log(`[Subtitle] Renderer mode: ${subtitleRendererMode}`);
   }
+
+  if (config.subtitleFit && ['stretch', 'bottom'].includes(config.subtitleFit)) {
+    subtitleFitMode = config.subtitleFit;
+  }
+  console.log(`[Subtitle] Renderer mode: ${subtitleRendererMode}, Fit mode: ${subtitleFitMode}`);
+
 
   // Update title with room info if in server mode
   if (config.serverMode && config.roomName) {
@@ -769,12 +776,59 @@ function applyTrackSelections() {
 }
 
 function tryDirectTrackManipulation() {
-  if (typeof video.audioTracks !== 'undefined' && currentVideoInfo.selectedAudioTrack !== undefined) {
-    const targetIndex = Math.max(0, Math.min(currentVideoInfo.selectedAudioTrack, video.audioTracks.length - 1));
+  if (currentVideoInfo.selectedAudioTrack !== undefined) {
+    const targetIndex = Math.max(0, Math.min(currentVideoInfo.selectedAudioTrack, (currentVideoInfo.tracks?.audio?.length || 1) - 1));
+
     if (lastAppliedAudioTrack !== targetIndex) {
-      for (let i = 0; i < video.audioTracks.length; i++) {
-        video.audioTracks[i].enabled = (i === targetIndex);
+      const selectedTrackDef = currentVideoInfo.tracks && currentVideoInfo.tracks.audio ? currentVideoInfo.tracks.audio[targetIndex] : null;
+
+      // Check if selected track is external
+      if (selectedTrackDef && selectedTrackDef.isExternal) {
+        console.log(`[Audio] Switching to EXTERNAL audio track: ${selectedTrackDef.url}`);
+
+        // 1. Mute main video to silence internal tracks
+        video.muted = true;
+
+        // 2. Setup and play external audio
+        let trackUrl = selectedTrackDef.url;
+        if (!trackUrl && selectedTrackDef.filename) {
+          trackUrl = `/tracks/${selectedTrackDef.filename}`;
+        }
+
+        if (externalAudio.src !== (new URL(trackUrl, window.location.href)).href) {
+          externalAudio.src = trackUrl;
+          externalAudio.currentTime = video.currentTime;
+          externalAudio.playbackRate = video.playbackRate;
+          externalAudio.volume = video.volume;
+
+          if (!video.paused) {
+            externalAudio.play().catch(e => console.error("External audio play error:", e));
+          }
+        }
+      } else {
+        // Internal Track Handling
+        console.log(`[Audio] Switching to INTERNAL audio track index: ${targetIndex}`);
+
+        // 1. Stop external audio if it was playing
+        if (externalAudio.src) {
+          externalAudio.removeAttribute('src');
+          externalAudio.load();
+        }
+
+        // 2. Unmute main video (unless user intentionally muted it, though we'll assume they want to hear the new track)
+        video.muted = false;
+
+        // 3. Switch internal track using native API (if possible)
+        // Note: Safari/WebKit supports video.audioTracks. Chrome/Firefox usually don't unless flags enabled
+        if (typeof video.audioTracks !== 'undefined') {
+          for (let i = 0; i < video.audioTracks.length; i++) {
+            video.audioTracks[i].enabled = (i === targetIndex);
+          }
+        } else {
+          console.log(`[Audio] Native video.audioTracks API not supported by this browser. (Chrome requires a flag)`);
+        }
       }
+
       lastAppliedAudioTrack = targetIndex;
     }
   }
@@ -1007,7 +1061,46 @@ async function loadJASSUB(trackUrl) {
       fallbackFont: 'Gandhi Sans'
     });
 
-    console.log('[Subtitle] Waiting for JASSUB ready...');
+    console.log(`[Subtitle] Waiting for JASSUB ready... (Fit Mode: ${subtitleFitMode})`);
+
+    // [MONKEY-PATCH] Override JASSUB's dimension calculation to behave according to `subtitleFitMode`
+    jassubInstance._getVideoPosition = function (width = this._video.videoWidth, height = this._video.videoHeight) {
+      if (!this._video) return { width: 0, height: 0, x: 0, y: 0 };
+
+      const offsetWidth = this._video.offsetWidth;
+      const offsetHeight = this._video.offsetHeight;
+
+      if (subtitleFitMode === 'bottom') {
+        const videoRatio = width / height;
+        const elementRatio = offsetWidth / offsetHeight;
+
+        let drawWidth = offsetWidth;
+        let drawHeight = offsetHeight;
+
+        // Native letterbox aspect ratio calculation
+        if (elementRatio > videoRatio) {
+          // Container is wider than video (pillarbox)
+          drawWidth = Math.floor(offsetHeight * videoRatio);
+        } else {
+          // Container is taller than video (letterbox)
+          drawHeight = Math.floor(offsetWidth / videoRatio);
+        }
+
+        const x = (offsetWidth - drawWidth) / 2;
+        // Anchor to the very bottom rather than centering vertically
+        const y = offsetHeight - drawHeight;
+
+        return { width: drawWidth, height: drawHeight, x, y };
+      } else {
+        // 'stretch' (Default) - Cover the whole container allowing subtitles in the black letterbox bounds
+        return {
+          width: offsetWidth,
+          height: offsetHeight,
+          x: 0,
+          y: 0
+        };
+      }
+    };
 
     // Persistent Canvas Supervisor
     // Watches for JASSUB creating/replacing the canvas and enforces visibility
@@ -1020,8 +1113,10 @@ async function loadJASSUB(trackUrl) {
           canvas.style.zIndex = '100';
           canvas.style.position = 'absolute';
           canvas.style.top = '0';
-          canvas.style.left = '0';
-          canvas.style.width = '100%';
+          if (subtitleFitMode === 'stretch') {
+            canvas.style.left = '0';
+            canvas.style.width = '100%';
+          }
           canvas.style.height = '100%';
           canvas.style.pointerEvents = 'none';
           canvas.style.opacity = '1';
@@ -1041,8 +1136,10 @@ async function loadJASSUB(trackUrl) {
         canvas.style.zIndex = '100';
         canvas.style.position = 'absolute';
         canvas.style.top = '0';
-        canvas.style.left = '0';
-        canvas.style.width = '100%';
+        if (subtitleFitMode === 'stretch') {
+          canvas.style.left = '0';
+          canvas.style.width = '100%';
+        }
         canvas.style.height = '100%';
         canvas.style.pointerEvents = 'none';
         canvas.style.opacity = '1';
@@ -1056,6 +1153,18 @@ async function loadJASSUB(trackUrl) {
 
     setTimeout(() => {
       console.log('[Subtitle] JASSUB initialized successfully');
+
+      // [MONKEY-PATCH 2] Override JASSUB's internal canvas resizer to prevent vertical/anamorphic stretching
+      // Telling libass the video size IS the canvas size forces it to use its own internal letterboxing if stretched!
+      if (subtitleFitMode === 'stretch') {
+        if (jassubInstance.renderer && jassubInstance.renderer._resizeCanvas) {
+          const origResizeCanvas = jassubInstance.renderer._resizeCanvas.bind(jassubInstance.renderer);
+          jassubInstance.renderer._resizeCanvas = function (width, height, vidW, vidH) {
+            return origResizeCanvas(width, height, width, height); // Force storage size = frame size!
+          };
+        }
+      }
+
       // Force initial resize check
       ensureJassubSize();
     }, 500);
@@ -1091,8 +1200,11 @@ async function loadJASSUB(trackUrl) {
       if (!jassubInstance) return;
       const rect = video.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
-        console.log('[Subtitle] Video now visible, JASSUB should auto-resize via ResizeObserver');
-        // Force ResizeObserver to re-check by triggering its callback
+        console.log('[Subtitle] JASSUB resizing for current bounds (Letterbox patch active)');
+        // Actually invoke a hard resize so the monkey-patch grabs the new fullscreen/windowed offset bounds immediately
+        jassubInstance.resize();
+
+        // Force ResizeObserver to re-check by triggering its callback if available
         if (jassubInstance._boundResize) {
           jassubInstance._boundResize();
         }
@@ -1298,14 +1410,42 @@ socket.on('sync', (state) => {
 video.addEventListener('play', () => {
   statusEl.classList.remove('visible');
   sendControlEvent();
+  if (externalAudio.src) externalAudio.play().catch(e => console.error("External audio play error:", e));
 });
 
 video.addEventListener('pause', () => {
   showTemporaryMessage("Paused", 0);
   sendControlEvent();
+  if (externalAudio.src) externalAudio.pause();
 });
 
-video.addEventListener('seeked', sendControlEvent);
+video.addEventListener('seeked', () => {
+  sendControlEvent();
+  if (externalAudio.src) externalAudio.currentTime = video.currentTime;
+});
+
+// External Audio Synchronization
+video.addEventListener('ratechange', () => {
+  if (externalAudio.src) externalAudio.playbackRate = video.playbackRate;
+});
+
+video.addEventListener('volumechange', () => {
+  if (externalAudio.src) {
+    externalAudio.volume = video.volume;
+    // We don't sync muted state directly because video might be muted to purposely isolate the external audio
+  }
+});
+
+video.addEventListener('timeupdate', () => {
+  // Drift correction for external audio
+  if (externalAudio.src && !video.paused) {
+    const drift = Math.abs(video.currentTime - externalAudio.currentTime);
+    if (drift > 0.25) { // If audio drifts more than 250ms, snap it back
+      console.log(`[Audio Sync] Correcting drift of ${drift.toFixed(3)}s`);
+      externalAudio.currentTime = video.currentTime;
+    }
+  }
+});
 
 // Control zones (click on screen)
 document.addEventListener('click', (e) => {
@@ -2428,7 +2568,7 @@ function addChatMessage(data) {
   // Track active message
   activeMessages.push(msgEl);
 
-  // 1. Time-based fading (5 seconds -> 2s fade)
+  // 1. Time-based fading (12 seconds -> 2s fade)
   setTimeout(() => {
     if (!msgEl.classList.contains('fading-fast')) {
       msgEl.classList.add('fading-slow');
@@ -2439,7 +2579,7 @@ function addChatMessage(data) {
         if (index > -1) activeMessages.splice(index, 1);
       }, 2100);
     }
-  }, 5000);
+  }, 12000);
 
   // 2. Count-based fading (>5 messages -> 0.5s fade on oldest)
   if (activeMessages.length > 5) {

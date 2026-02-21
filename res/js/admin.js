@@ -1,5 +1,6 @@
 const socket = io();
 let playlist = [];
+let allMediaFiles = []; // Full media file list (persists across playlist launches)
 let mainVideoIndex = -1;
 let skipSeconds = 5;
 let skipIntroSeconds = 90;
@@ -462,6 +463,11 @@ function switchView(viewName) {
   // Check HEVC warning visibility on tab switch
   updateHevcWarning();
 
+  // Auto-refresh track tools when switching to FFmpeg tab
+  if (viewName === 'ffmpeg' && typeof refreshSubtitleToolLists === 'function') {
+    refreshSubtitleToolLists();
+  }
+
   // Hide VPN warning on tab switch (media or remote)
   if (viewName !== 'dashboard') {
     const vpnWarning = document.getElementById('vpn-warning');
@@ -524,32 +530,14 @@ async function loadFiles() {
 
 // Display files in the file browser
 function displayFiles(files) {
+  // Store the full file list for use in track tools and other dropdowns
+  allMediaFiles = files;
   const fileBrowser = dom.fileBrowser || document.getElementById('file-browser');
 
-  // Also populate FFmpeg inputs
-  const ffmpegInputs = ['remux-file-input', 'reencode-file-input', 'extract-file-input'];
-  ffmpegInputs.forEach(id => {
-    const select = document.getElementById(id);
-    if (!select) return;
-
-    // Preserve current selection if any
-    const currentVal = select.value;
-
-    // Reset options but keep the first prompt
-    select.innerHTML = '<option value="">Select source file...</option>';
-
-    files.forEach(file => {
-      // Provide both MKV and MP4 options to all tools (let tool decide validation/appropriateness)
-      if (file.filename.endsWith('.mkv') || file.filename.endsWith('.mp4') || file.filename.endsWith('.avi') || file.filename.endsWith('.mov')) {
-        const opt = document.createElement('option');
-        opt.value = file.filename;
-        opt.textContent = file.filename;
-        select.appendChild(opt);
-      }
-    });
-
-    if (currentVal) select.value = currentVal;
-  });
+  // Trigger FFmpeg and Track Tool dropdown refreshes
+  if (typeof refreshFfmpegFileList === 'function') {
+    refreshFfmpegFileList();
+  }
 
   if (files.length === 0) {
     fileBrowser.innerHTML = '<div class="empty-message">No media files found in videos folder</div>';
@@ -2400,24 +2388,27 @@ function refreshFfmpegFileList() {
   const inputs = ['remux-file-input', 'reencode-file-input', 'extract-file-input'];
   inputs.forEach(id => {
     const select = document.getElementById(id);
-    // Keep first option
-    const first = select.options[0];
-    select.innerHTML = '';
-    select.appendChild(first);
+    const currentVal = select.value;
+    select.innerHTML = '<option value="">Select source file...</option>';
 
-    if (typeof playlist !== 'undefined' && playlist.length > 0) {
-      playlist.forEach(file => {
+    // Use all media files instead of just the playlist
+    const videoFiles = allMediaFiles.length > 0 ? allMediaFiles : (typeof playlist !== 'undefined' ? playlist : []);
+
+    if (videoFiles.length > 0) {
+      videoFiles.forEach(file => {
         const opt = document.createElement('option');
         opt.value = file.filename;
         opt.textContent = file.filename;
         select.appendChild(opt);
       });
     }
+
+    if (currentVal) select.value = currentVal;
     // Refresh custom UI
     setupCustomDropdown(select);
   });
 
-  // Refresh Subtitle Tool lists as well
+  // Refresh Track Tool lists as well
   if (typeof refreshSubtitleToolLists === 'function') {
     refreshSubtitleToolLists();
   }
@@ -2600,8 +2591,23 @@ function setupCustomDropdown(select) {
   // Update trigger text based on current native value
   const selectedOption = select.options[select.selectedIndex];
   if (selectedOption) {
-    trigger.querySelector('span') ? trigger.querySelector('span').textContent = selectedOption.textContent
-      : trigger.textContent = selectedOption.textContent;
+    if (selectedOption.dataset.hint) {
+      trigger.innerHTML = '';
+      const ts = document.createElement('span');
+      ts.textContent = selectedOption.textContent;
+      trigger.appendChild(ts);
+      const hs = document.createElement('span');
+      hs.textContent = selectedOption.dataset.hint;
+      hs.style.cssText = 'margin-left: auto; color: #666; font-size: 11px;';
+      trigger.appendChild(hs);
+      trigger.style.display = 'flex';
+      trigger.style.justifyContent = 'space-between';
+    } else {
+      trigger.style.display = '';
+      const span = trigger.querySelector('span');
+      if (span) span.textContent = selectedOption.textContent;
+      else trigger.textContent = selectedOption.textContent;
+    }
   }
 
   // Re-build custom options
@@ -2611,22 +2617,46 @@ function setupCustomDropdown(select) {
     const div = document.createElement('div');
     div.className = 'custom-option';
     if (opt.selected) div.classList.add('selected');
+    if (opt.disabled) div.classList.add('disabled');
     div.dataset.value = opt.value;
-    div.textContent = opt.textContent;
 
-    div.addEventListener('click', (e) => {
-      e.stopPropagation();
-      // Update native select
-      select.value = opt.value;
-      // Trigger change event manually
-      select.dispatchEvent(new Event('change'));
+    // Support data-hint for right-aligned gray text (e.g. "(has tracks)")
+    if (opt.dataset.hint) {
+      const textSpan = document.createElement('span');
+      textSpan.textContent = opt.textContent;
+      div.appendChild(textSpan);
+      const hintSpan = document.createElement('span');
+      hintSpan.textContent = opt.dataset.hint;
+      hintSpan.style.cssText = 'margin-left: auto; color: #666; font-size: 11px;';
+      div.appendChild(hintSpan);
+      div.style.display = 'flex';
+      div.style.justifyContent = 'space-between';
+    } else {
+      div.textContent = opt.textContent;
+    }
 
-      // Update UI
-      trigger.textContent = opt.textContent;
-      wrapper.querySelectorAll('.custom-option').forEach(o => o.classList.remove('selected'));
-      div.classList.add('selected');
-      wrapper.classList.remove('open');
-    });
+    if (!opt.disabled) {
+      div.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Update native select
+        select.value = opt.value;
+        // Trigger change event manually
+        select.dispatchEvent(new Event('change'));
+
+        // Update UI — show hint in trigger too if present
+        if (opt.dataset.hint) {
+          trigger.innerHTML = '';
+          const ts = document.createElement('span');
+          ts.textContent = opt.textContent;
+          trigger.appendChild(ts);
+        } else {
+          trigger.textContent = opt.textContent;
+        }
+        wrapper.querySelectorAll('.custom-option').forEach(o => o.classList.remove('selected'));
+        div.classList.add('selected');
+        wrapper.classList.remove('open');
+      });
+    }
 
     optionsDiv.appendChild(div);
   });
@@ -2685,134 +2715,83 @@ function initExtractTracksFiltering() {
 // Run init
 document.addEventListener('DOMContentLoaded', initExtractTracksFiltering);
 
-// ==================== Subtitle Tools Logic ====================
+// ==================== Track Tools Logic ======================================
 
 function initSubtitleTools() {
   const sourceSelect = document.getElementById('subtool-source-input');
   const targetSelect = document.getElementById('subtool-target-input');
-  const orphanCheckbox = document.getElementById('subtool-orphan-mode');
+  const trackSelect = document.getElementById('subtool-track-input');
 
   if (!sourceSelect || !targetSelect) return;
 
-  // Listen for source change to populate tracks
+  // Listen for source change to populate tracks (including orphans)
   sourceSelect.addEventListener('change', async () => {
     const filename = sourceSelect.value;
     await updateSubtitleTracksList(filename);
   });
 
-  // Listen for orphan mode toggle
-  if (orphanCheckbox) {
-    orphanCheckbox.addEventListener('change', () => {
-      refreshSubtitleToolLists();
+  // Listen for track selection to toggle action buttons (regular vs orphan)
+  if (trackSelect) {
+    trackSelect.addEventListener('change', () => {
+      const val = trackSelect.value;
+      const isOrphan = val && val.startsWith('orphan:');
+      const standardActions = document.getElementById('subtool-actions-standard');
+      const orphanActions = document.getElementById('subtool-actions-orphan');
+      if (standardActions) standardActions.style.display = isOrphan ? 'none' : 'flex';
+      if (orphanActions) orphanActions.style.display = isOrphan ? 'block' : 'none';
     });
   }
 
-  // Custom dropdown setup
+  // Custom dropdown setup (no initial population — done on first tab switch)
   setupCustomDropdown(sourceSelect);
   setupCustomDropdown(targetSelect);
-  setupCustomDropdown(document.getElementById('subtool-track-input'));
-  setupCustomDropdown(document.getElementById('subtool-orphan-input'));
-
-  // Initial population
-  refreshSubtitleToolLists();
+  setupCustomDropdown(trackSelect);
 }
 
-let isFetchingOrphans = false;
 
 function refreshSubtitleToolLists() {
   const sourceSelect = document.getElementById('subtool-source-input');
   const targetSelect = document.getElementById('subtool-target-input');
-  const orphanCheckbox = document.getElementById('subtool-orphan-mode');
 
   if (!sourceSelect || !targetSelect) return;
 
-  const isOrphanMode = orphanCheckbox ? orphanCheckbox.checked : false;
-
-  // Toggle UI visibility
-  const standardControls = document.getElementById('subtool-standard-controls');
-  const orphanControls = document.getElementById('subtool-orphan-controls');
-  const standardActions = document.getElementById('subtool-actions-standard');
-  const orphanActions = document.getElementById('subtool-actions-orphan');
-
-  if (standardControls) standardControls.style.display = isOrphanMode ? 'none' : 'block';
-  if (orphanControls) orphanControls.style.display = isOrphanMode ? 'block' : 'none';
-  if (standardActions) standardActions.style.display = isOrphanMode ? 'none' : 'flex';
-  if (orphanActions) orphanActions.style.display = isOrphanMode ? 'block' : 'none';
-
   // Populate Target (always needed)
   const currentTarget = targetSelect.value;
-  targetSelect.innerHTML = '<option value="">Select target video...</option>';
+  targetSelect.innerHTML = '<option value="">Select target video to assign track to...</option>';
 
-  if (typeof playlist !== 'undefined' && playlist.length > 0) {
-    console.log(`[SubtitleTools] Populating target list with ${playlist.length} items.`);
-    playlist.forEach(file => {
+  // Use all media files instead of just the playlist
+  const videoFiles = allMediaFiles.length > 0 ? allMediaFiles : (typeof playlist !== 'undefined' ? playlist : []);
+  if (videoFiles.length > 0) {
+    console.log(`[TrackTools] Populating target list with ${videoFiles.length} media files.`);
+    videoFiles.forEach(file => {
       const opt = document.createElement('option');
       opt.value = file.filename;
       opt.textContent = file.filename;
       targetSelect.appendChild(opt);
     });
   } else {
-    console.warn('[SubtitleTools] Playlist is empty or undefined during refresh.');
+    console.warn('[TrackTools] No media files available during refresh.');
   }
   if (currentTarget) targetSelect.value = currentTarget;
   setupCustomDropdown(targetSelect);
 
-  if (isOrphanMode) {
-    // Fetch Orphans
-    fetchOrphansList();
-  } else {
-    // Populate Source
-    const currentSource = sourceSelect.value;
-    sourceSelect.innerHTML = '<option value="">Select source video...</option>';
-    if (typeof playlist !== 'undefined' && playlist.length > 0) {
-      playlist.forEach(file => {
-        const opt = document.createElement('option');
-        opt.value = file.filename;
-        opt.textContent = file.filename;
-        sourceSelect.appendChild(opt);
-      });
-    }
-    if (currentSource) sourceSelect.value = currentSource;
-    setupCustomDropdown(sourceSelect);
-  }
-}
-
-async function fetchOrphansList() {
-  const orphanSelect = document.getElementById('subtool-orphan-input');
-  if (!orphanSelect) return;
-
-  if (isFetchingOrphans) return;
-  isFetchingOrphans = true;
-
-  orphanSelect.innerHTML = '<option value="">Loading orphans...</option>';
-  setupCustomDropdown(orphanSelect);
-
-  try {
-    const res = await fetch('/api/tracks/orphans');
-    const data = await res.json();
-
-    orphanSelect.innerHTML = '<option value="">Select an orphan file...</option>';
-
-    if (data.orphans && data.orphans.length > 0) {
-      data.orphans.forEach(o => {
-        const opt = document.createElement('option');
-        opt.value = o.filename;
-        opt.textContent = `${o.filename} (${o.type})`;
-        orphanSelect.appendChild(opt);
-      });
-    } else {
+  // Populate Source with all media files
+  const currentSource = sourceSelect.value;
+  sourceSelect.innerHTML = '<option value="" data-hint="(has tracks)">Select source video...</option>';
+  if (videoFiles.length > 0) {
+    videoFiles.forEach(file => {
       const opt = document.createElement('option');
-      opt.textContent = "No orphan subtitles found";
-      opt.disabled = true;
-      orphanSelect.appendChild(opt);
-    }
-  } catch (e) {
-    console.error('Error fetching orphans:', e);
-    orphanSelect.innerHTML = '<option value="">Error loading list</option>';
-  } finally {
-    isFetchingOrphans = false;
-    setupCustomDropdown(orphanSelect);
+      opt.value = file.filename;
+      opt.textContent = file.filename;
+      sourceSelect.appendChild(opt);
+    });
   }
+  if (currentSource) sourceSelect.value = currentSource;
+  setupCustomDropdown(sourceSelect);
+
+  // Always populate tracks (orphans show even without a source selected)
+  // Use a microtask to avoid double-call when setupCustomDropdown triggers a change event
+  Promise.resolve().then(() => updateSubtitleTracksList(currentSource || null));
 }
 
 async function updateSubtitleTracksList(filename) {
@@ -2821,105 +2800,149 @@ async function updateSubtitleTracksList(filename) {
   trackSelect.disabled = true;
   setupCustomDropdown(trackSelect);
 
-  if (!filename) {
-    trackSelect.innerHTML = '<option value="">Select source first...</option>';
-    setupCustomDropdown(trackSelect);
-    return;
+  // Reset action buttons to standard
+  const standardActions = document.getElementById('subtool-actions-standard');
+  const orphanActions = document.getElementById('subtool-actions-orphan');
+  if (standardActions) standardActions.style.display = 'flex';
+  if (orphanActions) orphanActions.style.display = 'none';
+
+  trackSelect.innerHTML = '<option value="">Select a track...</option>';
+  let hasAny = false;
+
+  // Fetch tracks for the selected source video (if one is selected)
+  if (filename) {
+    try {
+      const response = await fetch(`/api/tracks/${encodeURIComponent(filename)}`);
+      const data = await response.json();
+
+      // Show external subtitle tracks
+      if (data.subtitles && data.subtitles.length > 0) {
+        data.subtitles.forEach((track) => {
+          if (track.isExternal) {
+            hasAny = true;
+            const opt = document.createElement('option');
+            opt.value = track.index;
+            const fName = track.filename ? track.filename.split(/[/\\]/).pop() : 'External';
+            opt.textContent = `[SUB] [${track.language || 'und'}] ${track.title || 'Subtitle'} (${fName})`;
+            trackSelect.appendChild(opt);
+          }
+        });
+      }
+
+      // Show external audio tracks
+      if (data.audio && data.audio.length > 0) {
+        data.audio.forEach((track) => {
+          if (track.isExternal) {
+            hasAny = true;
+            const opt = document.createElement('option');
+            opt.value = track.index;
+            const fName = track.filename ? track.filename.split(/[/\\]/).pop() : 'External';
+            opt.textContent = `[AUD] [${track.language || 'und'}] ${track.title || 'Audio'} (${fName})`;
+            trackSelect.appendChild(opt);
+          }
+        });
+      }
+    } catch (e) {
+      console.error('Error loading source tracks:', e);
+    }
   }
 
+  // Always fetch and append orphan tracks
   try {
-    const response = await fetch(`/api/tracks/${encodeURIComponent(filename)}`);
-    const data = await response.json();
+    const orphanRes = await fetch('/api/tracks/orphans');
+    const orphanData = await orphanRes.json();
 
-    trackSelect.innerHTML = '<option value="">Select a track...</option>';
-    let hasExternal = false;
+    if (orphanData.orphans && orphanData.orphans.length > 0) {
+      // Add separator
+      const sep = document.createElement('option');
+      sep.disabled = true;
+      sep.value = '';
+      sep.textContent = '── Orphan Tracks ──';
+      trackSelect.appendChild(sep);
 
-    if (data.subtitles && data.subtitles.length > 0) {
-      data.subtitles.forEach((track) => {
-        if (track.isExternal) {
-          hasExternal = true;
-          const opt = document.createElement('option');
-          opt.value = track.index;
-          const fName = track.filename ? track.filename.split(/[/\\]/).pop() : 'External';
-          opt.textContent = `[${track.language || 'und'}] ${track.title || 'Subtitle'} (${fName})`;
-          trackSelect.appendChild(opt);
-        }
+      const audioExts = ['aac', 'mp3', 'm4a', 'ogg', 'wav', 'flac'];
+      orphanData.orphans.forEach(o => {
+        hasAny = true;
+        const opt = document.createElement('option');
+        opt.value = `orphan:${o.filename}`;
+        const typeTag = audioExts.includes(o.type) ? 'AUD' : 'SUB';
+        opt.textContent = `(orphan) [${typeTag}] ${o.filename}`;
+        trackSelect.appendChild(opt);
       });
     }
-
-    if (!hasExternal) {
-      const opt = document.createElement('option');
-      opt.textContent = "No external tracks found";
-      opt.disabled = true;
-      trackSelect.appendChild(opt);
-    } else {
-      trackSelect.disabled = false;
-    }
-
-    setupCustomDropdown(trackSelect);
   } catch (e) {
-    console.error(e);
-    trackSelect.innerHTML = '<option value="">Error loading tracks</option>';
-    setupCustomDropdown(trackSelect);
+    console.warn('Failed to fetch orphans:', e);
   }
+
+  if (!hasAny) {
+    const opt = document.createElement('option');
+    opt.textContent = "No tracks found";
+    opt.disabled = true;
+    trackSelect.appendChild(opt);
+  } else {
+    trackSelect.disabled = false;
+  }
+
+  setupCustomDropdown(trackSelect);
 }
 
 async function runSubtitleTool(action) {
   const sourceSelect = document.getElementById('subtool-source-input');
   const targetSelect = document.getElementById('subtool-target-input');
   const trackSelect = document.getElementById('subtool-track-input');
-  const orphanSelect = document.getElementById('subtool-orphan-input');
 
-  let source, trackIndex, orphanFile;
   const target = targetSelect.value;
+  const trackValue = trackSelect ? trackSelect.value : null;
 
-  if (action === 'bind-orphan') {
-    orphanFile = orphanSelect ? orphanSelect.value : null;
+  // Detect orphan selection
+  if (action === 'bind-orphan' || (trackValue && trackValue.startsWith('orphan:'))) {
+    const orphanFile = trackValue ? trackValue.replace('orphan:', '') : null;
     if (!orphanFile || !target) {
-      showToast('Please select an orphan file and a target video.', 3000, true);
+      showToast('Please select an orphan track and a target video.', 3000, true);
       return;
     }
-  } else {
-    // Standard rebind/share
-    source = sourceSelect ? sourceSelect.value : null;
-    trackIndex = trackSelect ? trackSelect.value : null;
+    if (!confirm('Are you sure you want to BIND (Assign) this orphan track?')) return;
 
-    if (!source || !target || !trackIndex) {
-      showToast('Please select source, target, and track.', 3000, true);
-      return;
-    }
-    if (source === target) {
-      showToast('Source and Target cannot be the same.', 3000, true);
-      return;
-    }
+    socket.emit('bind-orphan', { orphanFile, targetVideo: target }, (response) => {
+      if (response && response.success) {
+        showToast('Track bind successful!', 3000);
+        // Refresh track list to update orphan status
+        const source = sourceSelect ? sourceSelect.value : null;
+        if (source) updateSubtitleTracksList(source);
+      } else {
+        showToast(`Error: ${response ? response.error : 'Unknown'}`, 4000, true);
+      }
+    });
+    return;
+  }
+
+  // Standard rebind/share
+  const source = sourceSelect ? sourceSelect.value : null;
+  const trackIndex = trackValue;
+
+  if (!source || !target || !trackIndex) {
+    showToast('Please select source, target, and track.', 3000, true);
+    return;
+  }
+  if (source === target) {
+    showToast('Source and Target cannot be the same.', 3000, true);
+    return;
   }
 
   const actionMap = {
     'rebind': 'REBIND (Move)',
-    'share': 'SHARE (Link)',
-    'bind-orphan': 'BIND (Assign)'
+    'share': 'SHARE (Link)'
   };
 
-  if (!confirm(`Are you sure you want to ${actionMap[action]} this subtitle?`)) return;
+  if (!confirm(`Are you sure you want to ${actionMap[action]} this track?`)) return;
 
-  const eventName = action === 'rebind' ? 'rebind-subtitle' :
-    action === 'share' ? 'share-subtitle' :
-      'bind-orphan';
+  const eventName = action === 'rebind' ? 'rebind-subtitle' : 'share-subtitle';
+  const payload = { sourceVideo: source, targetVideo: target, trackIndex: parseInt(trackIndex) };
 
-  const payload = action === 'bind-orphan'
-    ? { orphanFile, targetVideo: target }
-    : { sourceVideo: source, targetVideo: target, trackIndex: parseInt(trackIndex) };
-
-  // Emit with callback
   socket.emit(eventName, payload, (response) => {
     if (response && response.success) {
-      showToast(`Subtitle ${action} successful!`, 3000);
-
-      if (action === 'rebind') {
-        if (typeof updateSubtitleTracksList === 'function' && source) updateSubtitleTracksList(source);
-      } else if (action === 'bind-orphan') {
-        if (typeof fetchOrphansList === 'function') fetchOrphansList();
-      }
+      showToast(`Track ${action} successful!`, 3000);
+      if (action === 'rebind' && source) updateSubtitleTracksList(source);
     } else {
       showToast(`Error: ${response ? response.error : 'Unknown'}`, 4000, true);
     }
@@ -2928,5 +2951,6 @@ async function runSubtitleTool(action) {
 
 // Init tools
 document.addEventListener('DOMContentLoaded', initSubtitleTools);
+
 window.runSubtitleTool = runSubtitleTool;
 

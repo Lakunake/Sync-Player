@@ -362,15 +362,35 @@
       grid-template-columns: 1fr 1fr;
       gap: 20px;
       flex: 1;
+      min-height: 0;
+      /* Allow grid to shrink within flex container */
+      overflow: hidden;
+      /* Prevent grid from expanding beyond viewport */
+    }
+
+    .media-playlist-layout>.panel {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      /* Allow panel to shrink so file-list can scroll */
+      overflow: hidden;
     }
 
     .file-list {
-      max-height: 400px;
+      max-height: 500px;
       overflow-y: auto;
       overflow-x: hidden;
       display: flex;
       flex-direction: column;
       gap: 8px;
+      flex: 1;
+      min-height: 0;
+      /* Critical: allow flex child to shrink and scroll */
+    }
+
+    /* Ensure playlist items don't shrink — let container scroll instead */
+    .file-list .playlist-item {
+      flex-shrink: 0;
     }
 
     .file-item {
@@ -792,7 +812,7 @@
 
     .custom-select-trigger {
       position: relative;
-      padding: 10px 15px;
+      padding: 10px 35px 10px 15px;
       background: rgba(255, 255, 255, 0.05);
       border: 1px solid rgba(255, 255, 255, 0.1);
       border-radius: 8px;
@@ -808,6 +828,8 @@
 
     .custom-select-trigger:after {
       content: '';
+      position: absolute;
+      right: 12px;
       width: 10px;
       height: 10px;
       border-right: 2px solid #888;
@@ -913,6 +935,14 @@
     .custom-option.selected {
       background: rgba(33, 150, 243, 0.4);
       color: #fff;
+    }
+
+    .custom-option.disabled {
+      color: #555;
+      cursor: default;
+      font-size: 11px;
+      text-align: center;
+      pointer-events: none;
     }
 
     /* Scrollbar for custom options */
@@ -1908,6 +1938,11 @@
       margin-bottom: 0;
     }
 
+    /* Remove margin from wrappers inside bottom flex rows so buttons align */
+    .ffmpeg-controls>div>div .custom-select-wrapper {
+      margin-bottom: 0;
+    }
+
     .ffmpeg-header {
       display: flex;
       justify-content: space-between;
@@ -1937,14 +1972,16 @@
       background: rgba(33, 150, 243, 0.2);
       border: 1px solid rgba(33, 150, 243, 0.3);
       color: #2196F3;
-      padding: 8px 16px;
+      padding: 10px 20px;
       border-radius: 6px;
       cursor: pointer;
       transition: all 0.2s;
       font-weight: 500;
       display: flex;
       align-items: center;
+      justify-content: center;
       gap: 8px;
+      min-width: 150px;
     }
 
     .ffmpeg-btn:hover {
@@ -2046,11 +2083,15 @@
       border-color: rgba(33, 150, 243, 0.3);
     }
 
-    /* Subtitle Tools — Override ffmpeg-controls grid to single-column */
+    /* Track Tools — Override ffmpeg-controls grid to single-column */
     .ffmpeg-controls.subtitle-tools {
       grid-template-columns: 1fr;
       align-items: stretch;
-      gap: 20px;
+      gap: 0;
+    }
+
+    .ffmpeg-controls.subtitle-tools .custom-select-wrapper {
+      margin-bottom: 8px;
     }
 
     /* Password Modal Specifics */
