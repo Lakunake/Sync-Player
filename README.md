@@ -16,6 +16,7 @@ A FULLY synchronized non-coder friendly HTML5 video player originally for Minecr
     * [Method 1: Direct Hosting](#method-1-lan-or-public-ip-direct-hosting)
     * [Method 2: Tailscale](#method-2-tailscale-virtual-lan)
     * [Method 3: Cloud Hosting](#method-3-cloud-hosting-render-heroku-replit-etc)
+* [Firewall Warning](#firewall-warning)
 * [File Structure](#-file-structure)
 * [Configuration](#️-configuration)
 * [License](#license)
@@ -82,8 +83,8 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 - File browser for media management
 - FFmpeg generated thumbnail for video from the first third of the video
 - Tab to use various ffmpeg tools
-<img width="1919" height="907" alt="image" src="https://github.com/user-attachments/assets/03b9b377-24c5-4ea3-a851-ab3386ddbc75" />
-<img width="1919" height="902" alt="image" src="https://github.com/user-attachments/assets/dcd825b6-322f-45aa-969e-b434a133a821" />
+<img width="1919" height="909" alt="image" src="https://github.com/user-attachments/assets/16706deb-cc7f-4ea4-8830-1dc88f141eeb" />
+<img width="1919" height="909" alt="image" src="https://github.com/user-attachments/assets/26cda4d9-69e0-4441-a218-e0e05c085b0e" />
 <img width="1832" height="933" alt="image" src="https://github.com/user-attachments/assets/359ef7b1-b0c7-40d4-a734-fd16cd6c78e5" />
 
 > [!NOTE]
@@ -103,8 +104,8 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 > [!NOTE]
 > Though many security features are implemented, direct hosting can still be risky for attacks
 
-1. Run `run.bat` in your folder
-2. Make sure your selected port is open in your firewall/router
+1. Make sure your selected port is open in your firewall/router
+2. Run `run.bat` in your folder
 3. Access the video player from devices at the provided links
 4. Access admin panel at `http://your-ip:port/admin` and go to `http://your-ip:port` in minecraft
 
@@ -132,7 +133,7 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 > Congratulations if you managed to deploy it successfully using Cloud Hosting...
 ---
 
-## Firewall Configuration
+## Firewall Warning
 
 By default, the `console.ps1` script will automatically:
 1.  Check if a Windows Firewall rule exists for your configured `PORT` (default 3000).

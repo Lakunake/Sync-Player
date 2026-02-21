@@ -21,7 +21,7 @@ If the console says "Node.js is not installed" or you need to update:
 Tailscale allows you to host a session without port forwarding.
 1.  **Install Tailscale** on both the host (you) and the client (the person watching).
 2.  **Login** to the same Tailscale network (or share your machine with them).
-3.  Run `.\res\console.ps1`.
+3.  Run a generate ssl script with Tailscale option selected and then run a startup script.
 4.  If active, you will see a **Tailscale URL** (e.g., `https://machine.tailnet.ts.net:3000`).
 5.  Share this URL with your friends!
 
