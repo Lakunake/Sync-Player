@@ -165,7 +165,7 @@ start.sh               # Linux startup script
 config.env             # Configuration file, this is plain text (port, settings, etc.)
 legacylauncher.bat     # Old startup script that is not updated but reliable, written in batch
 postinstall.js         # Fixes, bundling and whatnot after npm install
-generate-ssl.bat/sh    # Generates ssl for https usage, WILL give not trusted warn since this is self signed
+generate-ssl.bat/sh    # Generates ssl for https usage, may give not trusted warn since this is self signed
 subtitles.js           # wsr code
 ```
 
