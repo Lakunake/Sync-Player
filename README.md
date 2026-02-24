@@ -153,6 +153,7 @@ SYNC_SKIP_FIREWALL_CHECK=true
 /media/                # Folder containing media files
 /memory/               # Folder containing fingerprints, logs, etc.
 /res/                  # Folder containing the app’s runtime files, server, web pages, dependencies, and launch/helper scripts.
+/cert/                 # Folder containing the SSL generation scripts for HTTPS, the generated SSLs are also stored there.
 server.js              # Node.js backend
 index.html             # Client video player interface
 admin.html             # Admin control panel
@@ -180,7 +181,7 @@ port: [1024-49151]            # Server port
 volume_step: [1-20]           # Volume adjustment percentage
 skip_seconds: [5-60]          # Skip duration in seconds
 join_mode: sync/reset         # Decides what happens when a new user joins the watch party (more info in actual config)
-HTTPS: t/f                    # Whether you want to use https or not, but you also need cert and key files
+HTTPS: t/f                    # Whether you want to use https or not, but you also need cert and key files(check /cert)
 bsl_s2_mode: any/all          # Changing requirements of BSL-S² to if all clients should have file or not
 video_autoplay: t/f           # Explains itself
 admin_fingerprint_lock: t/f   # Generates a fingerprint from to first machine to access /admin to not let others reach it (t/f)
@@ -193,6 +194,13 @@ chat_enabled: t/f             # Yeah
 data_hydration: t/f           # When enabled, the server injects initial data into admin.html to save a round-trip, improves overall performance
 max_volume: [100-1000]        # How much should clients be able to crank the volume up to
 subtitle_renderer: wsr/jassub # Which subtitle renderer should be used to render .ass subtitles, wsr is generally more compatible than jassub
+disable_ban: t/f              # When ffmpeg tools password is typed incorrectly, honeypots until next refresh instead of banning.
+disable_consequences: t/f     # Whether or not honeypotting and banning an admin should happen after a failed login/spoofed fingerprint is detected
+tools_password: [string]      # The password to ffmpeg tools tab, is encrypted with SHA-256 onto RAM
+sync_player_key: [string]     # Encryption key, is optional and disabled by default
+subtitle_fit: bottom/strecth  # Stretch = Canvas fills screen/Bottom = Same video aspect ratio but is pinned to the bottom of the letterbox.
+show_ssl_tip: t/f             # Whether or not to show a tip that says there are SSL generation scripts in /cert
+skip_firewall_check: t/f      # See [Here](#firewall-warning)
 ```
 
 ---
