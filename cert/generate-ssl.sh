@@ -23,6 +23,15 @@ KEY_FILE="$SCRIPT_DIR/key.pem"
 CERT_FILE="$SCRIPT_DIR/cert.pem"
 CONFIG_FILE="$SCRIPT_DIR/../config.env"
 
+# Resolve local IP early so it's available for the final message even if certs are skipped
+if command -v ip &> /dev/null; then
+    LOCAL_IP=$(ip route get 1 | awk '{print $7;exit}')
+elif command -v ifconfig &> /dev/null; then
+    LOCAL_IP=$(ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1' | head -n1)
+else
+    LOCAL_IP="192.168.1.1"
+fi
+
 # Check if certificates already exist
 if [ -f "$KEY_FILE" ] && [ -f "$CERT_FILE" ]; then
     echo "Existing certificates found:"
@@ -54,15 +63,6 @@ if [ -z "$UPDATE_CONFIG_ONLY" ]; then
 
     echo "Using OpenSSL: $(which openssl)"
     echo ""
-
-    # Get local IP for certificate
-    if command -v ip &> /dev/null; then
-        LOCAL_IP=$(ip route get 1 | awk '{print $7;exit}')
-    elif command -v ifconfig &> /dev/null; then
-        LOCAL_IP=$(ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1' | head -n1)
-    else
-        LOCAL_IP="192.168.1.1"
-    fi
 
     echo "Generating self-signed certificate..."
     echo "  Valid for: localhost, $LOCAL_IP"
@@ -121,7 +121,7 @@ echo "Updating config.env..."
 
 if [ -f "$CONFIG_FILE" ]; then
     # Enable HTTPS
-    sed -i.bak 's/SYNC_USE_HTTPS=false/SYNC_USE_HTTPS=true/' "$CONFIG_FILE"
+    sed -i.bak 's/SYNC_USE_HTTPS=.*/SYNC_USE_HTTPS=true/' "$CONFIG_FILE"
     
     # Set JASSUB renderer
     sed -i.bak 's/SYNC_SUBTITLE_RENDERER=wsr/SYNC_SUBTITLE_RENDERER=jassub/' "$CONFIG_FILE"
