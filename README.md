@@ -107,8 +107,8 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 > [!IMPORTANT]  
 > Beware, Tailscale only allows 3 emails per [Tailnet](https://tailscale.com/kb/1136/tailnet), but it allows a 100 devices to be connected at the same time, so it would be best if you created a new email for your friends to log into tailscale to just for this
 
-> [!NOTE]
-> Though many security features are implemented, other hosting methods can still be [risky for attacks](https://github.com/Lakunake/Sync-Player/issues/68)
+> [!CAUTION]
+> Hosting methods below are still [risky for attacks](https://github.com/Lakunake/Sync-Player/issues/68)
 
 ### Method 2: Cloud Hosting (Render, Heroku, Replit, etc.)
 > Safe-ish..? Though hard to set up and do subsequent starts.
