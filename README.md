@@ -98,18 +98,7 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 > Ensure [Node.js](https://nodejs.org/) is installed before proceeding.
 > Run "npm install" at cmd in case of the auto install failing.
 
-### Method 1: LAN or Public IP (Direct Hosting),
-> Best for Many people and Repeated users, complex-ish setup
-
-> [!NOTE]
-> Though many security features are implemented, direct hosting can still be risky for attacks
-
-1. Make sure your selected port is open in your firewall/router
-2. Run `run.bat` in your folder
-3. Access the video player from devices at the provided links
-4. Access admin panel at `http://your-ip:port/admin` and go to `http://your-ip:port` in minecraft
-
-### Method 2: Tailscale (Virtual LAN) 
+### Method 1: Tailscale (Virtual LAN) 
 > Basic to setup. *Safest way to do it as in cybersecurity.* Takes a bit longer than method one to do a subsequent start. Also gives trusted SSLs for HTTPS
 
 1. Download and install [Tailscale](https://tailscale.com/download) on everybody's computers
@@ -117,6 +106,17 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 3. Run `run.bat`, then visit the provided network link
 > [!IMPORTANT]  
 > Beware, Tailscale only allows 3 emails per [Tailnet](https://tailscale.com/kb/1136/tailnet), but it allows a 100 devices to be connected at the same time, so it would be best if you created a new email for your friends to log into tailscale to just for this
+
+### Method 2: LAN or Public IP (Direct Hosting),
+> Best for Many people and Repeated users, complex-ish setup
+
+> [!NOTE]
+> Though many security features are implemented, other hosting methods can still be [risky for attacks](https://github.com/Lakunake/Sync-Player/issues/68)
+
+1. Make sure your selected port is open in your firewall/router
+2. Run `run.bat` in your folder
+3. Access the video player from devices at the provided links
+4. Access admin panel at `http://your-ip:port/admin` and go to `http://your-ip:port` in minecraft
 
 ### Method 3: Cloud Hosting (Render, Heroku, Replit, etc.)
 > Safe-ish..? Though hard to set up and do subsequent starts.
