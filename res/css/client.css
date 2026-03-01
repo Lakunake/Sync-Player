@@ -9,6 +9,13 @@
       /* Positioning context for JASSUB canvas */
       cursor: default;
       transition: cursor 0s;
+      user-select: none;
+      /* Prevent text cursor flicker on clicks */
+    }
+
+    input,
+    textarea {
+      user-select: text;
     }
 
     /* Hide cursor when idle */

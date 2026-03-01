@@ -345,13 +345,7 @@
               </div>
               <button class="control-btn speed" id="speed-up-btn">+</button>
 
-              <!-- Overlay Label -->
-              <div
-                style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none;">
-                <span
-                  style="background: rgba(0,0,0,0.6); color: #ff9800; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; border-radius: 10px; font-size: 12px; font-weight: bold; border: 1px solid #ff9800;">Under
-                  Construction</span>
-              </div>
+
             </div>
 
             <button class="btn btn-secondary" id="get-time-btn" style="width: 100%;">⏱️ Get Current
@@ -369,20 +363,24 @@
           <div class="panel glass-strong remote-bottom-panel" style="padding: 15px;">
             <div style="display: flex; gap: 30px; align-items: center; flex-wrap: wrap;">
               <!-- Track Selection -->
-              <div style="display: flex; align-items: center; gap: 10px;">
-                <label style="color: #888; font-size: 13px;">Audio:</label>
-                <select id="remote-audio-track" disabled
-                  style="padding: 8px 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #e0e0e0; min-width: 150px;">
-                  <option>No tracks available</option>
-                </select>
+              <div style="display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; max-width: 300px;">
+                <label style="color: #888; font-size: 13px; white-space: nowrap;">Audio:</label>
+                <div style="flex: 1; min-width: 0;">
+                  <select id="remote-audio-track" disabled
+                    style="padding: 8px 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #e0e0e0; width: 100%;">
+                    <option>No tracks available</option>
+                  </select>
+                </div>
               </div>
 
-              <div style="display: flex; align-items: center; gap: 10px;">
-                <label style="color: #888; font-size: 13px;">Subtitles:</label>
-                <select id="remote-subtitle-track" disabled
-                  style="padding: 8px 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #e0e0e0; min-width: 150px;">
-                  <option>No tracks available</option>
-                </select>
+              <div style="display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; max-width: 300px;">
+                <label style="color: #888; font-size: 13px; white-space: nowrap;">Subtitles:</label>
+                <div style="flex: 1; min-width: 0;">
+                  <select id="remote-subtitle-track" disabled
+                    style="padding: 8px 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #e0e0e0; width: 100%;">
+                    <option>No tracks available</option>
+                  </select>
+                </div>
               </div>
 
               <!-- Status message bubble between track selection and buttons -->
@@ -441,9 +439,18 @@
                     </select>
                     <div style="display: flex; gap: 10px;">
                       <select id="remux-preset" class="dropdown" style="flex: 1;">
-                        <option value="mp4_fast">Clean Remux to MP4 (FastStart)</option>
-                        <option value="mkv_copy">Remux to MKV (Copy Streams)</option>
-                        <option value="header_fix">Fix Headers (Ignore Errors)</option>
+                        <option value="mp4_fast"
+                          title="Copies all streams into a clean MP4 container with metadata moved to the start for instant playback.">
+                          Clean Remux to MP4 (FastStart)</option>
+                        <option value="keep_format"
+                          title="Copies all streams into a fresh container of the same format. Fixes minor corruption without changing anything.">
+                          Clean Remux (Keep Format)</option>
+                        <option value="mkv_copy"
+                          title="Copies all streams into a Matroska container. MKV supports virtually all codecs and subtitle formats.">
+                          Remux to MKV (Copy Streams)</option>
+                        <option value="header_fix"
+                          title="Attempts to rebuild container headers while ignoring stream errors. Use for files that won't play or seek properly.">
+                          Fix Headers (Ignore Errors)</option>
                       </select>
                     </div>
                   </div>
@@ -472,9 +479,14 @@
                         <!-- HW options injected by JS -->
                       </select>
                       <select id="reencode-quality" class="dropdown" style="flex: 1;">
-                        <option value="high">High Quality</option>
-                        <option value="medium" selected>Medium Quality</option>
-                        <option value="low">Low Quality</option>
+                        <option value="high" title="Target bitrate: ~8 Mbps. Best visual quality, largest file size.">
+                          High Quality</option>
+                        <option value="medium" selected
+                          title="Target bitrate: ~4 Mbps. Good balance of quality and file size.">Medium Quality
+                        </option>
+                        <option value="low"
+                          title="Target bitrate: ~1.5 Mbps. Smallest file, some quality loss visible in motion.">Low
+                          Quality</option>
                       </select>
                     </div>
                     <select id="reencode-resolution" class="dropdown" style="width: 100%;">
@@ -505,10 +517,20 @@
                         <option value="subtitle">Subtitle Tracks</option>
                       </select>
                       <select id="extract-format" class="dropdown" data-drop-up="true" style="flex: 1;">
-                        <option value="aac">AAC (Audio)</option>
-                        <option value="mp3">MP3 (Audio)</option>
-                        <option value="webvtt">WebVTT (Subtitle)</option>
-                        <option value="ass">ASS (Subtitle)</option>
+                        <option value="aac" title="Best for dubs. Efficient lossy. Universal browser support.">
+                          AAC</option>
+                        <option value="mp3"
+                          title="Legacy compatibility. Always re-encodes. Use if you want to export audio.">
+                          MP3</option>
+                        <option value="flac"
+                          title="Best when source has TrueHD, DTS-HD MA, or PCM audio. Larger files but no quality loss.">
+                          FLAC</option>
+                        <option value="webvtt"
+                          title="Standard web subtitle format. Works with most subtitle content. Use this for most cases.">
+                          WebVTT</option>
+                        <option value="ass"
+                          title="Preserves styling, fonts, and effects from styled subtitle tracks. Required for styled anime subs.">
+                          Advanced SubStation Alpha (ASS)</option>
                       </select>
                     </div>
                   </div>

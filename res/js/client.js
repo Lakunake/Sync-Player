@@ -237,8 +237,7 @@ let currentPlaylist = {
 };
 let currentVideoInfo = null;
 let mainVideoStartTime = 0;
-let currentServerRate = 1.0;
-let speedReloadTimeout = null;
+
 let videoLoadAttempts = 0;
 const maxVideoLoadAttempts = 3;
 let lastAppliedAudioTrack = null;
@@ -697,6 +696,15 @@ function loadCurrentVideo(startTime = 0) {
   // Request sync from server to get the current time (fallback/confirmation)
   socket.emit('request-sync');
 
+  // Clean up external audio when loading a new video
+  externalAudio.oncanplay = null;
+  if (externalAudio.src) {
+    externalAudio.pause();
+    externalAudio.removeAttribute('src');
+    externalAudio.load();
+  }
+  video.muted = false;
+
   clearVideoTracks();
   video.load();
 
@@ -795,15 +803,34 @@ function tryDirectTrackManipulation() {
           trackUrl = `/tracks/${selectedTrackDef.filename}`;
         }
 
-        if (externalAudio.src !== (new URL(trackUrl, window.location.href)).href) {
-          externalAudio.src = trackUrl;
-          externalAudio.currentTime = video.currentTime;
-          externalAudio.playbackRate = video.playbackRate;
-          externalAudio.volume = video.volume;
+        // Only reload if the track URL actually changed
+        const currentSrc = externalAudio.src ? new URL(externalAudio.src, window.location.href).href : '';
+        const newSrc = new URL(trackUrl, window.location.href).href;
 
-          if (!video.paused) {
-            externalAudio.play().catch(e => console.error("External audio play error:", e));
-          }
+        if (currentSrc !== newSrc) {
+          console.log(`[Audio] Loading external track, video is at t=${video.currentTime.toFixed(2)}s`);
+
+          // Remove any old canplay listener to prevent stacking
+          externalAudio.oncanplay = null;
+
+          externalAudio.preload = 'auto';
+          externalAudio.src = trackUrl;
+          externalAudio.volume = video.volume;
+          externalAudio.playbackRate = video.playbackRate;
+
+          // Defer seek + play until the audio element is actually ready
+          // (AAC files can't be seeked into until enough data is buffered)
+          externalAudio.oncanplay = function onceReady() {
+            externalAudio.oncanplay = null; // Fire once only
+            console.log(`[Audio] External track ready, seeking to t=${video.currentTime.toFixed(2)}s`);
+            externalAudio.currentTime = video.currentTime;
+
+            if (!video.paused) {
+              externalAudioPlayPromise = externalAudio.play().catch(e => {
+                if (e.name !== 'AbortError') console.error("[Audio] External play error:", e);
+              });
+            }
+          };
         }
       } else {
         // Internal Track Handling
@@ -811,6 +838,7 @@ function tryDirectTrackManipulation() {
 
         // 1. Stop external audio if it was playing
         if (externalAudio.src) {
+          externalAudio.oncanplay = null; // Clear any pending load callback
           externalAudio.removeAttribute('src');
           externalAudio.load();
         }
@@ -1364,23 +1392,20 @@ socket.on('sync', (state) => {
     video.currentTime = Math.max(0, targetTime);  // Don't go negative
   }
 
-  const syncedRate = state.playbackRate || 1.0;
-  currentServerRate = syncedRate;
+  const syncedRate = (state.playbackRate != null && state.playbackRate > 0) ? state.playbackRate : 1.0;
 
-  // If speed changed significantly, force a reload/re-sync as requested by user
+  // Apply speed change directly — no reload needed
   if (Math.abs(video.playbackRate - syncedRate) > 0.01) {
-    console.log(`[Sync] Speed changed to ${syncedRate}x. Scheduling reload...`);
+    console.log(`[Sync] Speed changed to ${syncedRate}x`);
+    video.playbackRate = syncedRate;
     showTemporaryMessage(`Speed: ${syncedRate}x`);
 
-    // Clear existing timeout to debounce rapid changes
-    if (speedReloadTimeout) clearTimeout(speedReloadTimeout);
-
-    // Wait 800ms before reloading to allow for multiple clicks
-    speedReloadTimeout = setTimeout(() => {
-      console.log('[Debounce] Executing reload for speed change...');
-      video.playbackRate = syncedRate;
-      loadCurrentVideo();
-    }, 800);
+    // Sync external audio rate immediately (ratechange event handles this too,
+    // but explicit set ensures nudging state is cleared)
+    if (externalAudio.src && externalAudio.readyState >= 2) {
+      externalAudioNudging = false;
+      externalAudio.playbackRate = syncedRate;
+    }
   }
 
   if (state.audioTrack !== undefined && state.audioTrack !== currentAudioTrack) {
@@ -1407,26 +1432,52 @@ socket.on('sync', (state) => {
 });
 
 // Event listeners - send control events to sync with server
+let externalAudioPlayPromise = null; // Track pending play() to avoid AbortError race
+
 video.addEventListener('play', () => {
   statusEl.classList.remove('visible');
   sendControlEvent();
-  if (externalAudio.src) externalAudio.play().catch(e => console.error("External audio play error:", e));
+  if (externalAudio.src && externalAudio.readyState >= 2) {
+    externalAudioPlayPromise = externalAudio.play().catch(e => {
+      // Only log real errors, not AbortErrors from normal play/pause sequencing
+      if (e.name !== 'AbortError') {
+        console.error("External audio play error:", e);
+      }
+    });
+  }
 });
 
 video.addEventListener('pause', () => {
   showTemporaryMessage("Paused", 0);
   sendControlEvent();
-  if (externalAudio.src) externalAudio.pause();
+  if (externalAudio.src) {
+    // Wait for any pending play() to resolve before pausing, preventing AbortError
+    const doPause = () => externalAudio.pause();
+    if (externalAudioPlayPromise) {
+      externalAudioPlayPromise.then(doPause).catch(doPause);
+      externalAudioPlayPromise = null;
+    } else {
+      doPause();
+    }
+  }
 });
 
 video.addEventListener('seeked', () => {
   sendControlEvent();
-  if (externalAudio.src) externalAudio.currentTime = video.currentTime;
+  if (externalAudio.src && externalAudio.readyState >= 2) {
+    externalAudio.currentTime = video.currentTime;
+    lastDriftCorrection = Date.now(); // Reset cooldown so drift correction doesn't fight the seek
+  }
 });
 
 // External Audio Synchronization
+let externalAudioNudging = false; // True when drift correction is actively adjusting playbackRate
+
 video.addEventListener('ratechange', () => {
-  if (externalAudio.src) externalAudio.playbackRate = video.playbackRate;
+  // Only sync rate if we're not in the middle of a drift-correction nudge
+  if (externalAudio.src && !externalAudioNudging) {
+    externalAudio.playbackRate = video.playbackRate;
+  }
 });
 
 video.addEventListener('volumechange', () => {
@@ -1436,13 +1487,40 @@ video.addEventListener('volumechange', () => {
   }
 });
 
+let lastDriftCorrection = 0; // Timestamp of last hard-seek correction
+const DRIFT_COOLDOWN_MS = 3000; // Minimum ms between hard-seek corrections
+const DRIFT_HARD_THRESHOLD = 3.0; // Seconds — hard-seek for large drifts
+const DRIFT_SOFT_THRESHOLD = 0.5; // Seconds — use playbackRate nudging for small drifts
+const DRIFT_ACCEPTABLE = 0.15; // Seconds — within this range, do nothing
+
 video.addEventListener('timeupdate', () => {
   // Drift correction for external audio
-  if (externalAudio.src && !video.paused) {
-    const drift = Math.abs(video.currentTime - externalAudio.currentTime);
-    if (drift > 0.25) { // If audio drifts more than 250ms, snap it back
-      console.log(`[Audio Sync] Correcting drift of ${drift.toFixed(3)}s`);
-      externalAudio.currentTime = video.currentTime;
+  // Only run if audio is loaded enough to seek (readyState >= 2 = HAVE_CURRENT_DATA)
+  if (externalAudio.src && !video.paused && externalAudio.readyState >= 2) {
+    const drift = video.currentTime - externalAudio.currentTime; // Signed: positive = audio is behind
+    const absDrift = Math.abs(drift);
+    const now = Date.now();
+
+    if (absDrift > DRIFT_HARD_THRESHOLD) {
+      // LARGE DRIFT (>3s) — Hard-seek immediately (e.g. after a seek, or initial load)
+      if (now - lastDriftCorrection > DRIFT_COOLDOWN_MS) {
+        console.log(`[Audio Sync] Hard correction: drift of ${drift.toFixed(3)}s`);
+        externalAudio.currentTime = video.currentTime;
+        externalAudioNudging = false;
+        externalAudio.playbackRate = video.playbackRate; // Reset rate
+        lastDriftCorrection = now;
+      }
+    } else if (absDrift > DRIFT_SOFT_THRESHOLD) {
+      // SMALL DRIFT (0.5-3s) — Nudge playbackRate to gradually catch up
+      const nudge = drift > 0 ? 1.05 : 0.95;
+      externalAudioNudging = true;
+      externalAudio.playbackRate = video.playbackRate * nudge;
+    } else if (absDrift <= DRIFT_ACCEPTABLE) {
+      // ACCEPTABLE — Restore normal rate if we were nudging
+      if (externalAudioNudging) {
+        externalAudioNudging = false;
+        externalAudio.playbackRate = video.playbackRate;
+      }
     }
   }
 });
@@ -2400,7 +2478,11 @@ function initChatWidget() {
         // Re-check conditions just in case they changed during wait
         const stillHasPlaylist = typeof currentPlaylist !== 'undefined' && currentPlaylist.videos && currentPlaylist.videos.length > 0;
 
-        if (stillHasPlaylist) {
+        // Don't go idle while user is actively typing in an input field
+        const activeEl = document.activeElement;
+        const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
+
+        if (stillHasPlaylist && !isTyping) {
           // Add idle class to body - CSS will hide cursor and chat elements
           document.body.classList.add('idle');
           chatHeader.classList.add('idle-hidden');

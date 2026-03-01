@@ -59,14 +59,14 @@ if (-not $localIP) { $localIP = "192.168.1.1" }
 
 # Default certificate settings
 $defaults = @{
-    Country = "US"
-    State = "State"
-    City = "City"
+    Country      = "US"
+    State        = "State"
+    City         = "City"
     Organization = "Sync-Player"
-    Unit = "Development"
-    CommonName = "localhost"
-    Days = 365
-    IP = $localIP
+    Unit         = "Development"
+    CommonName   = "localhost"
+    Days         = 365
+    IP           = $localIP
 }
 
 # Check for OpenSSL first
@@ -83,7 +83,8 @@ foreach ($path in $possiblePaths) {
         $null = & $path version 2>&1
         $opensslPath = $path
         break
-    } catch {
+    }
+    catch {
         continue
     }
 }
@@ -143,16 +144,17 @@ if (-not $skipGeneration) {
         Write-Host "Generating Tailscale certificate..." -ForegroundColor Cyan
         try {
             # Retrieve the Tailscale domain name
-            # Retrieve the Tailscale domain name
             $jsonRaw = tailscale status --json
             $tsStatus = $jsonRaw | ConvertFrom-Json
+            $domain = $null
             
             if ($tsStatus.Self.DNSName) {
                 $domain = $tsStatus.Self.DNSName.TrimEnd('.')
-            } else {
+            }
+            else {
                 # Fallback: Try to construct from CertDomains or Hostname if available
                 if ($tsStatus.CertDomains) {
-                     $domain = $tsStatus.CertDomains[0].TrimEnd('.')
+                    $domain = $tsStatus.CertDomains[0].TrimEnd('.')
                 }
             }
             
@@ -166,9 +168,9 @@ if (-not $skipGeneration) {
             # Tailscale outputs to current directory, so we temporarily switch to sslDir
             Push-Location $sslDir
             try {
-                $tsProcess = Start-Process -FilePath "tailscale" -ArgumentList "cert", $domain -NoNewWindow -Wait -PassThru
-                if ($tsProcess.ExitCode -ne 0) {
-                    throw "Tailscale command failed with exit code $($tsProcess.ExitCode)"
+                & tailscale cert $domain
+                if ($LASTEXITCODE -ne 0) {
+                    throw "tailscale cert failed with exit code $LASTEXITCODE"
                 }
                 
                 # Identify the generated files. They are typically <hostname>.<tailnet>.ts.net.crt/.key
@@ -183,10 +185,12 @@ if (-not $skipGeneration) {
                     Write-Host "Tailscale certificates generated!" -ForegroundColor Green
                     Write-Host "  - Key:  $KeyFile" -ForegroundColor Gray
                     Write-Host "  - Cert: $CertFile" -ForegroundColor Gray
-                } else {
+                }
+                else {
                     throw "Could not locate generated Tailscale certificates."
                 }
-            } finally {
+            }
+            finally {
                 Pop-Location
             }
             
@@ -194,12 +198,14 @@ if (-not $skipGeneration) {
             Write-Host "Certificates are ready in '$sslDir'." -ForegroundColor Green
             Write-Host ""
 
-        } catch {
+        }
+        catch {
             Write-Host "Failed to generate Tailscale certificates: $_" -ForegroundColor Red
             Read-Host "Press Enter to exit"
             exit 1
         }
-    } elseif ($opensslPath) {
+    }
+    elseif ($opensslPath) {
         $certSettings = $defaults.Clone()
 
         if ($mode -eq "2") {
@@ -207,10 +213,10 @@ if (-not $skipGeneration) {
             Write-Host ""
 
             # Helper function to prompt with default
-            function Read-WithDefault($prompt, $default) {
-                $input = Read-Host "$prompt [$default]"
-                if ([string]::IsNullOrWhiteSpace($input)) { return $default }
-                return $input
+            function Read-WithDefault($labelText, $defaultVal) {
+                $userInput = Read-Host "$labelText [$defaultVal]"
+                if ([string]::IsNullOrWhiteSpace($userInput)) { return $defaultVal }
+                return $userInput
             }
 
             $certSettings.Country = Read-WithDefault "Country Code (2 letters)" $defaults.Country
@@ -275,10 +281,9 @@ IP.2 = $($certSettings.IP)
                 "-config", $configPath
             )
             
-            $process = Start-Process -FilePath $opensslPath -ArgumentList $opensslArgs -NoNewWindow -Wait -PassThru
-            
-            if ($process.ExitCode -ne 0) {
-                throw "OpenSSL failed with exit code $($process.ExitCode)"
+            & $opensslPath @opensslArgs
+            if ($LASTEXITCODE -ne 0) {
+                throw "OpenSSL failed with exit code $LASTEXITCODE"
             }
             
             Write-Host ""
@@ -290,16 +295,19 @@ IP.2 = $($certSettings.IP)
             Write-Host "Certificates are ready in '$sslDir'." -ForegroundColor Green
             Write-Host ""
             
-        } catch {
+        }
+        catch {
             Write-Host "Failed to generate certificate: $_" -ForegroundColor Red
             Read-Host "Press Enter to exit"
             exit 1
-        } finally {
+        }
+        finally {
             if (Test-Path $configPath) {
                 Remove-Item $configPath -Force
             }
         }
-    } else {
+    }
+    else {
         Write-Host "Invalid mode selected or required tool missing." -ForegroundColor Red
         exit 1
     }
@@ -312,7 +320,7 @@ if (Test-Path $ConfigFile) {
     $content = Get-Content $ConfigFile -Raw
     
     # Enable HTTPS
-    $content = $content -replace "SYNC_USE_HTTPS=false", "SYNC_USE_HTTPS=true"
+    $content = $content -replace "SYNC_USE_HTTPS=.*", "SYNC_USE_HTTPS=true"
     
     # Set JASSUB renderer
     if ($content -match "SYNC_SUBTITLE_RENDERER=wsr") {
@@ -338,21 +346,24 @@ if (Test-Path $ConfigFile) {
         # Update or Add Key File
         if ($content -match "SYNC_SSL_KEY_FILE=.*") {
             $content = $content -replace "SYNC_SSL_KEY_FILE=.*", "SYNC_SSL_KEY_FILE=$relKey"
-        } else {
+        }
+        else {
             $content += "`nSYNC_SSL_KEY_FILE=$relKey"
         }
 
         # Update or Add Cert File
         if ($content -match "SYNC_SSL_CERT_FILE=.*") {
             $content = $content -replace "SYNC_SSL_CERT_FILE=.*", "SYNC_SSL_CERT_FILE=$relCert"
-        } else {
+        }
+        else {
             $content += "`nSYNC_SSL_CERT_FILE=$relCert"
         }
         
         Write-Host "  - SYNC_SSL_KEY_FILE=$relKey" -ForegroundColor Green
         Write-Host "  - SYNC_SSL_CERT_FILE=$relCert" -ForegroundColor Green
 
-    } catch {
+    }
+    catch {
         Write-Host "  Warning: Failed to update certificate paths in config: $_" -ForegroundColor Yellow
     }
     
@@ -361,7 +372,8 @@ if (Test-Path $ConfigFile) {
     Write-Host "  - SYNC_USE_HTTPS=true" -ForegroundColor Green
     Write-Host "  - SYNC_SUBTITLE_RENDERER=jassub" -ForegroundColor Green
     Write-Host ""
-} else {
+}
+else {
     Write-Host "  config.env not found, skipping config update" -ForegroundColor Yellow
     Write-Host ""
 }
@@ -376,7 +388,7 @@ Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host "  1. Restart Sync-Player" -ForegroundColor Gray
 Write-Host "  2. Access via given links" -ForegroundColor Gray
-Write-Host "  2,1. Accept the certificate warning in your browser" -ForegroundColor Gray
+Write-Host "  2.1. Accept the certificate warning in your browser" -ForegroundColor Gray
 Write-Host ""
 Write-Host "Note: Clients may see a browser warning because this is a" -ForegroundColor Gray
 Write-Host "self-signed certificate. This is normal for LAN use." -ForegroundColor Gray

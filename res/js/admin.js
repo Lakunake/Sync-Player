@@ -1316,9 +1316,18 @@ function renderRemoteTrackControls() {
       // Use idx (Array Index) for consistency with client-side array access
       const trackId = idx;
       opt.value = trackId;
+
       const displayTitle = track.title || 'Track ' + trackId;
-      const fileNameInfo = track.filename ? ` (${track.filename})` : '';
-      opt.textContent = `${track.language} - ${displayTitle}${fileNameInfo}`;
+      const lang = track.language || 'und';
+
+      let formatLabel = '';
+      if (track.filename) {
+        const ext = track.filename.split('.').pop().toLowerCase();
+        const displayExt = ext === 'm4a' ? 'AAC' : ext.toUpperCase();
+        formatLabel = `[${displayExt}] `;
+      }
+
+      opt.textContent = `${formatLabel}${lang} - ${displayTitle}`;
       audioSelect.appendChild(opt);
     });
     audioSelect.disabled = false;
@@ -1480,6 +1489,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   socket.emit('get-config');
+  socket.emit('request-sync');  // Get current speed state immediately
 
   // Init static dropdowns (FFmpeg tools, etc.)
   document.querySelectorAll('select').forEach(sel => setupCustomDropdown(sel));
@@ -2310,9 +2320,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 let ffmpegAuthenticated = false;
 
-async function authenticateFfmpeg() {
+async function authenticateFfmpeg(autoLoginPassword = null) {
   const passwordInput = document.getElementById('ffmpeg-password-input');
-  const password = passwordInput.value;
+  const password = typeof autoLoginPassword === 'string' ? autoLoginPassword : passwordInput.value;
 
   try {
     const response = await fetch('/api/ffmpeg/auth', {
@@ -2433,18 +2443,30 @@ async function refreshFfmpegJobs() {
         div.style.marginBottom = '8px';
         div.style.borderLeft = `3px solid ${job.status === 'completed' ? '#00e676' : job.status === 'failed' ? '#ff1744' : job.status === 'running' ? '#2979ff' : '#888'}`;
 
+        let labelText = job.filename;
+        let subText = `(${job.preset || ''})`;
+
+        if (job.type === 'track-tool' && job.options) {
+          labelText = `${job.options.action.toUpperCase()} ➔ ${job.options.targetVideo}`;
+          subText = '';
+        }
+
         div.innerHTML = `
                   <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
                      <span style="font-weight:bold; color:#fff;">${job.type.toUpperCase()} <small style="opacity:0.7">#${job.id}</small></span>
                      <span style="font-size:12px; opacity:0.8">${job.status.toUpperCase()}</span>
                   </div>
                   <div style="font-size:12px; color:#aaa; margin-bottom:5px;">
-                     ${job.filename} <span style="opacity:0.5">(${job.preset || ''})</span>
+                     ${labelText} <span style="opacity:0.5">${subText}</span>
                   </div>
                   ${job.error ? `<div style="color:#ff1744; font-size:11px;">Error: ${job.error}</div>` : ''}
-                  ${job.status === 'running' ? `
+                  ${job.status === 'running' && job.type !== 'track-tool' ? `
                     <div style="background:rgba(255,255,255,0.1); height:4px; border-radius:2px; margin-top:5px; overflow:hidden;">
                        <div style="background:#2979ff; width:${job.progress}%; height:100%;"></div>
+                    </div>` : ''}
+                  ${job.status === 'running' && job.type === 'track-tool' ? `
+                    <div style="background:rgba(255,255,255,0.1); height:4px; border-radius:2px; margin-top:5px; overflow:hidden;">
+                       <div style="background:#00e676; width:100%; height:100%; animation: pulse 1s infinite;"></div>
                     </div>` : ''}
                   ${job.status === 'completed' && job.duration ? `
                     <div style="text-align:right; font-size:10px; color:#aaa; margin-top:4px;">
@@ -2521,9 +2543,10 @@ function startJobPolling() {
 }
 
 // Auto-login check if session matches
-if (sessionStorage.getItem('ffmpeg_password')) {
+const savedFfmpegPassword = sessionStorage.getItem('ffmpeg_password');
+if (savedFfmpegPassword) {
   // Ideally verify, but for UX immediately try to show content if we trust session
-  authenticateFfmpeg();
+  authenticateFfmpeg(savedFfmpegPassword);
 }
 
 window.openExternalModal = openExternalModal;
@@ -2635,6 +2658,15 @@ function setupCustomDropdown(select) {
       div.textContent = opt.textContent;
     }
 
+    // Tooltip support: if the original <option> has a title, show it on hover
+    if (opt.title) {
+      div.style.position = 'relative';
+      const tooltip = document.createElement('span');
+      tooltip.className = 'custom-option-tooltip';
+      tooltip.textContent = opt.title;
+      div.appendChild(tooltip);
+    }
+
     if (!opt.disabled) {
       div.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -2682,7 +2714,7 @@ function initExtractTracksFiltering() {
       let visible = false;
 
       if (type === 'audio') {
-        if (['aac', 'mp3'].includes(val)) visible = true;
+        if (['aac', 'mp3', 'flac'].includes(val)) visible = true;
       } else if (type === 'subtitle') {
         if (['webvtt', 'ass'].includes(val)) visible = true;
       }
@@ -2903,15 +2935,10 @@ async function runSubtitleTool(action) {
     }
     if (!confirm('Are you sure you want to BIND (Assign) this orphan track?')) return;
 
-    socket.emit('bind-orphan', { orphanFile, targetVideo: target }, (response) => {
-      if (response && response.success) {
-        showToast('Track bind successful!', 3000);
-        // Refresh track list to update orphan status
-        const source = sourceSelect ? sourceSelect.value : null;
-        if (source) updateSubtitleTracksList(source);
-      } else {
-        showToast(`Error: ${response ? response.error : 'Unknown'}`, 4000, true);
-      }
+    submitTrackToolJob({
+      action: 'bind-orphan',
+      targetVideo: target,
+      orphanFile: orphanFile
     });
     return;
   }
@@ -2936,17 +2963,48 @@ async function runSubtitleTool(action) {
 
   if (!confirm(`Are you sure you want to ${actionMap[action]} this track?`)) return;
 
-  const eventName = action === 'rebind' ? 'rebind-subtitle' : 'share-subtitle';
-  const payload = { sourceVideo: source, targetVideo: target, trackIndex: parseInt(trackIndex) };
-
-  socket.emit(eventName, payload, (response) => {
-    if (response && response.success) {
-      showToast(`Track ${action} successful!`, 3000);
-      if (action === 'rebind' && source) updateSubtitleTracksList(source);
-    } else {
-      showToast(`Error: ${response ? response.error : 'Unknown'}`, 4000, true);
-    }
+  submitTrackToolJob({
+    action: action,
+    sourceVideo: source,
+    targetVideo: target,
+    trackIndex: parseInt(trackIndex)
   });
+}
+
+// Helper to submit the Track Tool job to the FFmpeg Queue
+async function submitTrackToolJob(options) {
+  const password = sessionStorage.getItem('ffmpeg_password');
+  try {
+    const response = await fetch('/api/ffmpeg/run-preset', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        password,
+        type: 'track-tool',
+        filename: options.targetVideo, // Just to satisfy the endpoint's generic requirement
+        preset: 'none',
+        options
+      })
+    });
+
+    const data = await response.json();
+    if (data.success) {
+      showToast('Track tool job started successfully!', 2000);
+      refreshFfmpegJobs();
+      startJobPolling();
+
+      // Auto-refresh the source list to show changes
+      const sourceSelect = document.getElementById('subtool-source-input');
+      if (sourceSelect && sourceSelect.value && options.action !== 'bind-orphan') updateSubtitleTracksList(sourceSelect.value);
+    } else {
+      showToast(data.error || 'Failed to start job', 3000, true);
+    }
+  } catch (e) {
+    console.error('Track tool job error:', e);
+    showToast('Network error starting job', 3000, true);
+  }
 }
 
 // Init tools

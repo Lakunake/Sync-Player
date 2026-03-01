@@ -183,3 +183,5 @@ res/public/jassub/jassub-worker.wasm
 res/public/jassub/jassub-worker.js
 res/public/jassub/jassub-worker-modern.wasm
 res/public/jassub/default.woff2
+*.TTF
+*.otf

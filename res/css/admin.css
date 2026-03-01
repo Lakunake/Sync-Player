@@ -14,6 +14,20 @@
       color: #e0e0e0;
       min-height: 100vh;
       display: flex;
+      user-select: none;
+      /* Prevent text cursor flicker on clicks */
+    }
+
+    /* Keep logs, inputs, and specifically marked text selectable */
+    input,
+    textarea,
+    #logs-container.selectable,
+    .selectable {
+      user-select: text;
+    }
+
+    #logs-container {
+      user-select: text;
     }
 
     /* Glassmorphism Base */
@@ -826,6 +840,18 @@
       align-items: center;
     }
 
+    /* Truncate long text in select dropdowns to prevent layout stretching */
+    .custom-select-trigger span:first-child,
+    .custom-option span:first-child {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1;
+      /* allow it to take available space before truncating */
+      min-width: 0;
+      /* Critical for flex child truncation */
+    }
+
     .custom-select-trigger:after {
       content: '';
       position: absolute;
@@ -920,6 +946,11 @@
       cursor: pointer;
       transition: all 0.2s;
       border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+
+      /* Truncate text directly inside naked div options */
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .custom-option:last-child {
@@ -943,6 +974,25 @@
       font-size: 11px;
       text-align: center;
       pointer-events: none;
+    }
+
+    .custom-option-tooltip {
+      display: none;
+      font-size: 11px;
+      color: #888;
+      font-weight: 400;
+      margin-top: 4px;
+      line-height: 1.3;
+      white-space: normal;
+    }
+
+    .custom-option:hover {
+      white-space: normal;
+      overflow: visible;
+    }
+
+    .custom-option:hover .custom-option-tooltip {
+      display: block;
     }
 
     /* Scrollbar for custom options */
@@ -1117,6 +1167,9 @@
       background: rgba(255, 255, 255, 0.05);
       color: #e0e0e0;
       font-size: 14px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      transform: translateZ(0);
+      /* Prevent subpixel-AA text flicker bug in Chromium */
     }
 
     .seek-control input:focus {
@@ -1380,23 +1433,23 @@
       }
     }
 
-    /* Scrollbar */
+    @keyframes pulse {
+      0% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.5;
+      }
+
+      100% {
+        opacity: 1;
+      }
+    }
+
+    /* Hide global scrollbar visually as requested */
     ::-webkit-scrollbar {
-      width: 6px;
-    }
-
-    ::-webkit-scrollbar-track {
-      background: rgba(255, 255, 255, 0.05);
-      border-radius: 3px;
-    }
-
-    ::-webkit-scrollbar-thumb {
-      background: rgba(33, 150, 243, 0.5);
-      border-radius: 3px;
-    }
-
-    ::-webkit-scrollbar-thumb:hover {
-      background: rgba(33, 150, 243, 0.7);
+      display: none;
     }
 
     /* HEVC Warning - Moved to Header */
@@ -1485,6 +1538,9 @@
       color: #e0e0e0;
       font-size: 14px;
       margin-bottom: 15px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      transform: translateZ(0);
+      /* Prevent subpixel-AA text flicker bug in Chromium */
     }
 
     .youtube-input:focus {
@@ -2106,4 +2162,13 @@
       text-align: center;
       letter-spacing: 2px;
       margin-bottom: 20px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      transform: translateZ(0);
+      /* Prevent subpixel-AA text flicker bug in Chromium */
+    }
+
+    .password-input:focus {
+      outline: none;
+      border-color: #9C27B0;
+      box-shadow: 0 0 10px rgba(156, 39, 176, 0.3);
     }

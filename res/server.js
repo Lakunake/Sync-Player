@@ -137,10 +137,21 @@ try {
 
 // node-av ffmpeg binary path
 let ffmpegPath;
+let isFfmpegAvailable;
 try {
-  ffmpegPath = require('node-av/ffmpeg').ffmpegPath;
+  const navFfmpeg = require('node-av/ffmpeg');
+  ffmpegPath = navFfmpeg.ffmpegPath;
+  isFfmpegAvailable = navFfmpeg.isFfmpegAvailable;
 } catch (e) {
   console.warn('node-av/ffmpeg not found.');
+}
+
+// Resolves the ffmpeg binary: bundled node-av binary first, system PATH as fallback
+function getFFmpegBin() {
+  if (typeof isFfmpegAvailable === 'function' && isFfmpegAvailable()) {
+    return ffmpegPath();
+  }
+  return 'ffmpeg'; // system PATH fallback
 }
 
 // =================================================================
@@ -902,6 +913,32 @@ app.get('/api/ffmpeg/encoders', (req, res) => {
 // =================================================================
 // Track Manifest Helpers (module scope — used by FFmpeg jobs and socket handlers)
 // =================================================================
+// Read a source video's manifest and pick out a specific track by its index.
+function readSourceTrackGlobal(videoFile, trackIdx) {
+  const manifestName = path.basename(videoFile) + '.json';
+  const manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestName);
+
+  if (!fs.existsSync(manifestPath)) {
+    return { error: 'Source video does not have a track manifest.' };
+  }
+
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const externalTracks = manifest.externalTracks || [];
+
+    // External tracks from the UI are offset by 1000 to distinguish them from internal streams
+    const arrayIndex = trackIdx >= 1000 ? trackIdx - 1000 : parseInt(trackIdx);
+    const track = externalTracks[arrayIndex];
+
+    if (!track) {
+      return { error: `Specified track does not exist in the source manifest (tried index ${arrayIndex}).` };
+    }
+
+    return { manifest, manifestPath, track, arrayIndex };
+  } catch (e) {
+    return { error: 'Failed to parse source manifest: ' + e.message };
+  }
+}
 
 // Load (or create) a target manifest, find the next safe track index, and return naming helpers
 function prepareTargetManifestGlobal(targetVideo) {
@@ -951,7 +988,7 @@ function buildTrackEntryGlobal(trackPath, opts = {}) {
 // Returns array of { path, type, lang, title } for each extracted track
 // Skips tracks that already have an output file in TRACKS_DIR
 // =================================================================
-async function extractTracksForFile(inputPath, safeFilename, trackType, targetFormat) {
+async function extractTracksForFile(inputPath, safeFilename, trackType, targetFormat, isSideJob = false) {
   if (!Demuxer) throw new Error('node-av Demuxer not available');
 
   const demuxer = await Demuxer.open(inputPath);
@@ -967,12 +1004,30 @@ async function extractTracksForFile(inputPath, safeFilename, trackType, targetFo
 
     if (matchingStreams.length === 0) return extractedTracks; // No streams of this type, not an error
 
+    let job = null;
+    if (isSideJob) {
+      const jobId = 'extract_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+      job = {
+        id: jobId,
+        type: trackType === 'subtitle' ? 'extract-sub' : 'extract-audio',
+        filename: safeFilename,
+        status: 'running',
+        progress: 0,
+        startTime: Date.now()
+      };
+      ffmpegJobs.push(job);
+    }
+
     const originalExt = path.extname(safeFilename);
     const baseName = path.basename(safeFilename, originalExt);
 
     let ext = targetFormat;
     if (trackType === 'subtitle') {
       ext = (targetFormat === 'ass') ? 'ass' : 'vtt';
+    } else if (trackType === 'audio' && targetFormat === 'aac') {
+      ext = 'm4a'; // AAC in MP4 container for seekable browser playback
+      // mp3 stays .mp3 — Xing header handles seeking natively
+      // flac stays .flac — built-in SEEKTABLE handles seeking
     }
 
     for (let i = 0; i < matchingStreams.length; i++) {
@@ -989,6 +1044,16 @@ async function extractTracksForFile(inputPath, safeFilename, trackType, targetFo
       if (fs.existsSync(outputUrl)) {
         console.log(`[FFmpeg] Track already exists, skipping: ${outputFilename}`);
         extractedTracks.push({ path: outputFilename, type: trackType, lang, title });
+
+        if (job) {
+          job.progress = Math.round(((i + 1) / matchingStreams.length) * 100);
+          if (i === matchingStreams.length - 1) {
+            job.status = 'completed';
+            job.endTime = Date.now();
+            job.duration = (job.endTime - job.startTime) / 1000;
+          }
+        }
+
         continue;
       }
 
@@ -998,13 +1063,19 @@ async function extractTracksForFile(inputPath, safeFilename, trackType, targetFo
 
       if (trackType === 'audio') {
         if (targetFormat === 'mp3') {
+          // Raw MP3 — Xing header (written by libmp3lame VBR) handles browser seeking
           args.push('-c:a', 'libmp3lame', '-q:a', '2');
-        } else if (targetFormat === 'aac') {
+        } else if (targetFormat === 'aac' || targetFormat === 'm4a') {
+          // Output as M4A (AAC in MP4 container) for proper browser seeking
+          // Raw AAC has no seek table — M4A's moov atom enables HTTP Range seeking
+          args.push('-f', 'mp4', '-movflags', '+faststart');
           if (stream.codec_name === 'aac') {
             args.push('-c:a', 'copy');
           } else {
             args.push('-c:a', 'aac', '-b:a', '192k');
           }
+        } else if (targetFormat === 'flac') {
+          args.push('-c:a', 'flac');
         } else {
           args.push('-c:a', 'copy');
         }
@@ -1018,15 +1089,57 @@ async function extractTracksForFile(inputPath, safeFilename, trackType, targetFo
 
       args.push(outputUrl);
 
+      // Pre-fetch duration for percentage maths
+      const totalDuration = await getVideoDuration(inputPath);
+      let lastExtractUpdate = Date.now();
+
       await new Promise((resolve, reject) => {
-        const proc = spawn('ffmpeg', args);
+        const proc = spawn(getFFmpegBin(), args);
+
+        proc.stderr.on('data', (data) => {
+          if (!job) return;
+
+          if (Date.now() - lastExtractUpdate < 3000) return;
+
+          const text = data.toString();
+          const timeMatch = text.match(/time=(\d{2}):(\d{2}):(\d{2})\.\d{2}/);
+          if (timeMatch && totalDuration > 0) {
+            const hours = parseInt(timeMatch[1], 10);
+            const minutes = parseInt(timeMatch[2], 10);
+            const seconds = parseInt(timeMatch[3], 10);
+            const elapsed = (hours * 3600) + (minutes * 60) + seconds;
+
+            // Adjust progress relative to how many tracks we have 
+            // ex: if 2 tracks total, the first track maps 0-50%, the second 50-100%
+            const baseProgress = (i / matchingStreams.length) * 100;
+            const chunkProgress = (elapsed / totalDuration) * (100 / matchingStreams.length);
+            job.progress = Math.min(Math.round(baseProgress + chunkProgress), 100);
+            lastExtractUpdate = Date.now();
+          }
+        });
+
         proc.on('close', async (code) => {
           if (code === 0) {
             if (targetFormat === 'vtt' || ext === 'vtt') {
               await cleanVttFile(outputUrl);
             }
+            if (job) {
+              job.progress = Math.round(((i + 1) / matchingStreams.length) * 100);
+              if (i === matchingStreams.length - 1) {
+                job.status = 'completed';
+                job.endTime = Date.now();
+                job.duration = (job.endTime - job.startTime) / 1000;
+              }
+            }
             resolve();
-          } else reject(new Error(`FFmpeg exited with code ${code}`));
+          } else {
+            if (job) {
+              job.status = 'error';
+              job.error = `FFmpeg exited with code ${code}`;
+              job.endTime = Date.now();
+            }
+            reject(new Error(`FFmpeg exited with code ${code}`));
+          }
         });
         proc.on('error', (err) => reject(err));
       });
@@ -1069,7 +1182,7 @@ async function extractTracksForFile(inputPath, safeFilename, trackType, targetFo
 // =================================================================
 // Post-completion: Extract all tracks from original and share to output
 // =================================================================
-async function extractAndShareTracks(inputPath, safeFilename, outputPath) {
+async function extractAndShareTracks(inputPath, safeFilename, outputPath, isSideJob = false) {
   const outputFilename = path.basename(outputPath);
   console.log(`[FFmpeg] Auto-extracting tracks from ${safeFilename} and sharing to ${outputFilename}...`);
 
@@ -1077,7 +1190,7 @@ async function extractAndShareTracks(inputPath, safeFilename, outputPath) {
 
   // Extract subtitles (VTT)
   try {
-    const subTracks = await extractTracksForFile(inputPath, safeFilename, 'subtitle', 'vtt');
+    const subTracks = await extractTracksForFile(inputPath, safeFilename, 'subtitle', 'vtt', isSideJob);
     allTracks = allTracks.concat(subTracks);
   } catch (e) {
     console.warn('[FFmpeg] Subtitle extraction skipped:', e.message);
@@ -1085,7 +1198,7 @@ async function extractAndShareTracks(inputPath, safeFilename, outputPath) {
 
   // Extract audio (AAC)
   try {
-    const audioTracks = await extractTracksForFile(inputPath, safeFilename, 'audio', 'aac');
+    const audioTracks = await extractTracksForFile(inputPath, safeFilename, 'audio', 'aac', isSideJob);
     allTracks = allTracks.concat(audioTracks);
   } catch (e) {
     console.warn('[FFmpeg] Audio extraction skipped:', e.message);
@@ -1143,11 +1256,14 @@ async function runFfmpegJob(jobId, type, params) {
       let outputPath;
 
       if (preset === 'mp4_fast') {
-        outputPath = path.join(ROOT_DIR, 'media', path.basename(safeFilename, path.extname(safeFilename)) + '_remux.mp4');
+        outputPath = path.join(ROOT_DIR, 'media', path.basename(safeFilename, path.extname(safeFilename)) + '-clean.mp4');
+      } else if (preset === 'keep_format') {
+        const ext = path.extname(safeFilename);
+        outputPath = path.join(ROOT_DIR, 'media', path.basename(safeFilename, ext) + '-clean' + ext);
       } else if (preset === 'mkv_copy') {
-        outputPath = path.join(ROOT_DIR, 'media', path.basename(safeFilename, path.extname(safeFilename)) + '_remux.mkv');
+        outputPath = path.join(ROOT_DIR, 'media', path.basename(safeFilename, path.extname(safeFilename)) + '-clean.mkv');
       } else {
-        outputPath = addSuffix(safeFilename, '_fixed');
+        outputPath = addSuffix(safeFilename, '-fixed');
       }
 
       if (!Demuxer || !Muxer) throw new Error('node-av not available');
@@ -1156,21 +1272,46 @@ async function runFfmpegJob(jobId, type, params) {
       const demuxer = await Demuxer.open(inputPath);
       const muxer = await Muxer.open(outputPath);
 
-      // Copy streams
+      // Copy streams (Restrict to Video / Audio to prevent container codec crashes like ASS into MP4)
+      const allowedStreams = new Set();
+      const streamMap = {}; // Maps demuxer stream index -> muxer stream index
       for (const stream of demuxer.streams) {
-        // For remuxing we copy the stream. 
-        // High-level API usually copies codec parameters automatically if we just add the stream
-        muxer.addStream(stream);
+        if (stream.codecpar?.type === 'video' || stream.codecpar?.type === 'audio' || stream.codecpar?.codecType === 0 || stream.codecpar?.codecType === 1) {
+          const muxerStreamIdx = muxer.addStream(stream);
+          allowedStreams.add(stream.index);
+          streamMap[stream.index] = muxerStreamIdx;
+        }
       }
 
       // Manual packet loop for progress tracking
-      // (pipeline() is easier but progress is opaque without callback)
+      const duration = demuxer.duration > 0 ? demuxer.duration : (await getVideoDuration(inputPath)) || 1;
+      let lastRemuxUpdate = Date.now();
+      const AV_NOPTS_VALUE = -9223372036854775808n;
 
-      for await (const packet of demuxer) {
-        await muxer.writePacket(packet);
+      for await (const packet of demuxer.packets()) {
+        if (!packet) break;
+        if (!allowedStreams.has(packet.streamIndex)) continue; // Drop unwanted subtitle packets natively
+
+        // Best-effort timestamp sync to mitigate some Matroska warnings
+        if (packet.pts === AV_NOPTS_VALUE && packet.dts !== AV_NOPTS_VALUE) packet.pts = packet.dts;
+        if (packet.dts === AV_NOPTS_VALUE && packet.pts !== AV_NOPTS_VALUE) packet.dts = packet.pts;
+
+        // Map original packet stream index to the new Muxer stream index layout
+        const targetStreamIdx = streamMap[packet.streamIndex];
+        await muxer.writePacket(packet, targetStreamIdx);
+
+        if (Date.now() - lastRemuxUpdate > 4000) {
+          const tb = demuxer.streams[packet.streamIndex]?.timeBase;
+          if (tb && typeof packet.pts === 'bigint' && packet.pts !== AV_NOPTS_VALUE) {
+            const currentSeconds = Number(packet.pts) * (tb.num / tb.den);
+            job.progress = Math.min(Math.max(Math.round((currentSeconds / duration) * 100), 0), 99);
+            lastRemuxUpdate = Date.now();
+          }
+        }
       }
 
       await muxer.close(); // Important to finalize file
+      if (demuxer && demuxer.close) await demuxer.close(); // Fix massive memory leak
 
       job.status = 'completed';
       job.progress = 100;
@@ -1179,14 +1320,14 @@ async function runFfmpegJob(jobId, type, params) {
 
       // Auto-extract tracks from original and share to remuxed output
       try {
-        await extractAndShareTracks(inputPath, safeFilename, outputPath);
+        await extractAndShareTracks(inputPath, safeFilename, outputPath, true);
       } catch (e) {
         console.warn('[FFmpeg] Post-remux track extraction failed:', e.message);
       }
 
     } else if (type === 'reencode') {
       const { resolution, quality, encoder: encoderName } = params.options;
-      const outputPath = addSuffix(safeFilename, `_${resolution}_${quality}`);
+      const outputPath = addSuffix(safeFilename, `-${encoderName}-${resolution}-${quality}`);
 
       if (!Demuxer || !Muxer || !Decoder || !Encoder) throw new Error('node-av not fully loaded');
 
@@ -1229,18 +1370,41 @@ async function runFfmpegJob(jobId, type, params) {
       });
 
       // Add stream to muxer
-      muxer.addStream(encoder);
+      const outStreamIdx = muxer.addStream(encoder);
 
       // Pipeline: Input -> Decoder -> Encoder -> Output
       const inputPackets = demuxer.packets(videoStream.index);
       const decodedFrames = decoder.frames(inputPackets);
       const encodedPackets = encoder.packets(decodedFrames);
 
+      const duration = demuxer.duration > 0 ? demuxer.duration : (await getVideoDuration(inputPath)) || 1;
+      let lastReencodeUpdate = Date.now();
+      const AV_NOPTS_VALUE = -9223372036854775808n;
+
       for await (const packet of encodedPackets) {
-        await muxer.writePacket(packet);
+        if (!packet) {
+          await muxer.writePacket(null, outStreamIdx); break;
+        }
+
+        // Apply fallback DTS if available inside encoded packets (though node-av encoder probably sets it)
+        if (packet.pts === AV_NOPTS_VALUE && packet.dts !== AV_NOPTS_VALUE) packet.pts = packet.dts;
+        if (packet.dts === AV_NOPTS_VALUE && packet.pts !== AV_NOPTS_VALUE) packet.dts = packet.pts;
+
+        await muxer.writePacket(packet, outStreamIdx);
+
+        if (Date.now() - lastReencodeUpdate > 4000) {
+          const tb = videoStream.timeBase;
+          if (tb && typeof packet.pts === 'bigint' && packet.pts !== AV_NOPTS_VALUE) {
+            const currentSeconds = Number(packet.pts) * (tb.num / tb.den);
+            job.progress = Math.min(Math.max(Math.round((currentSeconds / duration) * 100), 0), 99);
+            lastReencodeUpdate = Date.now();
+          }
+        }
       }
 
       await muxer.close();
+      if (demuxer && demuxer.close) await demuxer.close(); // Fix massive memory leak
+
       job.status = 'completed';
       job.progress = 100;
       job.endTime = Date.now();
@@ -1248,7 +1412,7 @@ async function runFfmpegJob(jobId, type, params) {
 
       // Auto-extract tracks from original and share to re-encoded output
       try {
-        await extractAndShareTracks(inputPath, safeFilename, outputPath);
+        await extractAndShareTracks(inputPath, safeFilename, outputPath, true);
       } catch (e) {
         console.warn('[FFmpeg] Post-reencode track extraction failed:', e.message);
       }
@@ -1295,6 +1459,9 @@ async function runFfmpegJob(jobId, type, params) {
       } else {
         // Audio
         if (ext === 'webvtt') ext = 'vtt'; // Just in case
+        if (ext === 'aac') ext = 'm4a'; // AAC in MP4 container for seekable browser playback
+        // mp3 stays .mp3 — Xing header handles seeking natively
+        // flac stays .flac — built-in SEEKTABLE handles seeking
       }
 
       // Loop through all matching streams
@@ -1321,14 +1488,19 @@ async function runFfmpegJob(jobId, type, params) {
         // Codec Selection
         if (trackType === 'audio') {
           if (targetFormat === 'mp3') {
-            args.push('-c:a', 'libmp3lame', '-q:a', '2'); // VBR High Quality
+            // Raw MP3 — Xing header (written by libmp3lame VBR) handles browser seeking
+            args.push('-c:a', 'libmp3lame', '-q:a', '2');
           } else if (targetFormat === 'aac') {
-            // If source is aac, copy. Else encode.
+            // Output as M4A (AAC in MP4 container) for proper browser seeking
+            args.push('-f', 'mp4', '-movflags', '+faststart');
             if (stream.codec_name === 'aac') {
               args.push('-c:a', 'copy');
             } else {
               args.push('-c:a', 'aac', '-b:a', '192k');
             }
+          } else if (targetFormat === 'flac') {
+            // FLAC — lossless, built-in SEEKTABLE, no container tricks needed
+            args.push('-c:a', 'flac');
           } else {
             args.push('-c:a', 'copy');
           }
@@ -1344,14 +1516,37 @@ async function runFfmpegJob(jobId, type, params) {
 
         args.push(outputUrl);
 
+        const totalDuration = await getVideoDuration(inputPath) || 1;
+        let lastExtractUpdate = Date.now();
+
         await new Promise((resolve, reject) => {
-          const proc = spawn('ffmpeg', args);
+          const proc = spawn(getFFmpegBin(), args);
+
+          proc.stderr.on('data', (data) => {
+            if (Date.now() - lastExtractUpdate < 3000) return;
+
+            const text = data.toString();
+            const timeMatch = text.match(/time=(\d{2}):(\d{2}):(\d{2})\.\d{2}/);
+            if (timeMatch && totalDuration > 0) {
+              const hours = parseInt(timeMatch[1], 10);
+              const minutes = parseInt(timeMatch[2], 10);
+              const seconds = parseInt(timeMatch[3], 10);
+              const elapsed = (hours * 3600) + (minutes * 60) + seconds;
+
+              const baseProgress = (i / matchingStreams.length) * 100;
+              const chunkProgress = (elapsed / totalDuration) * (100 / matchingStreams.length);
+              job.progress = Math.min(Math.round(baseProgress + chunkProgress), 100);
+              lastExtractUpdate = Date.now();
+            }
+          });
+
           proc.on('close', async (code) => {
             if (code === 0) {
               // Post-process VTT to clean artifacts
               if (targetFormat === 'vtt' || ext === 'vtt') {
                 await cleanVttFile(outputUrl);
               }
+              job.progress = Math.round(((i + 1) / matchingStreams.length) * 100);
               resolve();
             } else reject(new Error(`FFmpeg exited with code ${code}`));
           });
@@ -1397,6 +1592,102 @@ async function runFfmpegJob(jobId, type, params) {
 
       job.status = 'completed';
       job.progress = 100;
+      job.endTime = Date.now();
+      job.duration = (job.endTime - job.startTime) / 1000;
+
+      if (demuxer && demuxer.close) await demuxer.close(); // Fix massive memory leak
+
+    } else if (type === 'track-tool') {
+      const { action, sourceVideo, targetVideo, trackIndex, orphanFile } = params.options;
+
+      // Ensure manifest manipulation functions are accessible globally in server.js
+      if (action === 'rebind' || action === 'share') {
+        const src = readSourceTrackGlobal(sourceVideo, trackIndex);
+        if (src.error) throw new Error(src.error);
+
+        const tgt = prepareTargetManifestGlobal(targetVideo);
+
+        if (action === 'rebind') {
+          let absoluteOldPath = path.join(TRACKS_DIR, src.track.path);
+          if (!fs.existsSync(absoluteOldPath) && path.isAbsolute(src.track.path) && fs.existsSync(src.track.path)) {
+            absoluteOldPath = src.track.path;
+          }
+
+          const ext = path.extname(absoluteOldPath);
+          const lang = src.track.lang || 'und';
+          const title = (src.track.title || 'Track').replace(/[^a-zA-Z0-9]/g, '');
+          const newFileName = `${tgt.safeBaseName}_track${tgt.nextIndex}_${lang}_${title}${ext}`;
+          const absoluteNewPath = path.join(TRACKS_DIR, newFileName);
+
+          fs.renameSync(absoluteOldPath, absoluteNewPath);
+
+          tgt.manifest.externalTracks.push(buildTrackEntryGlobal(newFileName, {
+            type: src.track.type || 'subtitle', lang, title: src.track.title || 'Track'
+          }));
+          fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
+
+          src.manifest.externalTracks.splice(src.arrayIndex, 1);
+          fs.writeFileSync(src.manifestPath, JSON.stringify(src.manifest, null, 2));
+          console.log(`[Subtitle] Rebound ${newFileName} from ${sourceVideo} to ${targetVideo}`);
+
+        } else if (action === 'share') {
+          if (tgt.manifest.externalTracks.some(t => t.path === src.track.path)) {
+            throw new Error('Subtitle is already linked to target');
+          }
+          tgt.manifest.externalTracks.push(buildTrackEntryGlobal(src.track.path, {
+            type: src.track.type || 'subtitle', lang: src.track.lang || 'und', title: src.track.title || 'Track'
+          }));
+          fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
+          console.log(`[Subtitle] Shared ${src.track.path} from ${sourceVideo} to ${targetVideo}`);
+        }
+
+        job.status = 'completed';
+        job.progress = 100;
+
+      } else if (action === 'bind-orphan') {
+        const sourcePath = path.join(TRACKS_DIR, orphanFile);
+        if (!fs.existsSync(sourcePath)) throw new Error('Orphan file not found');
+
+        const tgt = prepareTargetManifestGlobal(targetVideo);
+        let finalSourcePath = sourcePath;
+        let ext = path.extname(sourcePath).toLowerCase();
+        let wasConverted = false;
+
+        if (ext === '.srt') {
+          if (!ffmpegPath) throw new Error('FFmpeg not available for conversion');
+          const tempVttName = `${path.basename(orphanFile, '.srt')}_converted.vtt`;
+          const tempVttPath = path.join(TRACKS_DIR, tempVttName);
+          const bin = ffmpegPath();
+
+          await new Promise((resolve, reject) => {
+            const proc = spawn(bin, ['-y', '-i', sourcePath, tempVttPath]);
+            proc.on('close', code => code === 0 ? resolve() : reject(new Error(`Exit code ${code}`)));
+            proc.on('error', err => reject(err));
+          });
+
+          finalSourcePath = tempVttPath;
+          ext = '.vtt';
+          wasConverted = true;
+          console.log(`[Subtitle] Converted SRT to VTT: ${tempVttName}`);
+        }
+
+        const newFileName = `${tgt.safeBaseName}_track${tgt.nextIndex}_und_Orphan${ext}`;
+        const finalPath = path.join(TRACKS_DIR, newFileName);
+        fs.renameSync(finalSourcePath, finalPath);
+
+        if (wasConverted && fs.existsSync(sourcePath)) {
+          try { fs.unlinkSync(sourcePath); } catch (e) { }
+        }
+
+        tgt.manifest.externalTracks.push(buildTrackEntryGlobal(newFileName, {
+          type: 'subtitle', lang: 'und', title: 'Orphan'
+        }));
+        fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
+
+        job.status = 'completed';
+        job.progress = 100;
+      }
+
       job.endTime = Date.now();
       job.duration = (job.endTime - job.startTime) / 1000;
 
@@ -3112,6 +3403,11 @@ io.on('connection', (socket) => {
           }
           io.to(roomCode).emit('sync', room.videoState);
         } else if (data.action === 'rate') {
+          // Validate rate: must be a finite number in [0.1, 5.0]
+          if (typeof data.rate !== 'number' || !isFinite(data.rate) || data.rate < 0.1 || data.rate > 5.0) {
+            console.log(`[Rate Control] Invalid rate value: ${data.rate}`);
+            return;
+          }
           consolidateTime(room.videoState);
           console.log(`[Rate Control] Setting playback rate to ${data.rate} for room ${roomCode}`);
           room.videoState.playbackRate = data.rate;
@@ -3171,6 +3467,11 @@ io.on('connection', (socket) => {
         }
         io.emit('sync', videoState);
       } else if (data.action === 'rate') {
+        // Validate rate: must be a finite number in [0.1, 5.0]
+        if (typeof data.rate !== 'number' || !isFinite(data.rate) || data.rate < 0.1 || data.rate > 5.0) {
+          console.log(`[Rate Control Legacy] Invalid rate value: ${data.rate}`);
+          return;
+        }
         consolidateTime(videoState);
         videoState.playbackRate = data.rate;
         console.log(`[Rate Control Legacy] Setting playback rate to ${data.rate}`);
@@ -3190,210 +3491,13 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ==================== Subtitle Tools Handlers ====================
-
-  // --- Shared Helpers ---
-
+  // Shared Subtitle Helpers
   // Read source manifest and resolve a track by its index (handles the 1000+ offset)
-  function readSourceTrack(sourceVideo, trackIndex) {
-    const manifestName = path.basename(sourceVideo) + '.json';
-    const manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestName);
+  // Needed because node-av handles local file extraction but track lists are UI managed
 
-    if (!fs.existsSync(manifestPath)) {
-      return { error: 'Source tracks manifest not found' };
-    }
+  // NOTE: Track Tools (Rebind, Share, Convert Orphan) have been migrated to the unified
+  // HTTP FFmpeg Job Queue (see /api/ffmpeg/run-preset and runFfmpegJob).
 
-    let manifest;
-    try {
-      manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    } catch (e) {
-      console.error(`[Manifest Error] Failed to parse ${manifestName}:`, e.message);
-      return { error: 'Invalid source manifest file' };
-    }
-    if (!manifest.externalTracks || !Array.isArray(manifest.externalTracks)) {
-      return { error: 'No external tracks found in source' };
-    }
-
-    const arrayIndex = trackIndex >= 1000 ? trackIndex - 1000 : trackIndex;
-    if (arrayIndex < 0 || arrayIndex >= manifest.externalTracks.length) {
-      return { error: 'Track not found (invalid index)' };
-    }
-
-    return { manifest, manifestPath, arrayIndex, track: manifest.externalTracks[arrayIndex] };
-  }
-
-  // Load (or create) a target manifest, find the next safe track index, and return naming helpers
-  // Delegate to module-scope versions
-  function prepareTargetManifest(targetVideo) {
-    return prepareTargetManifestGlobal(targetVideo);
-  }
-
-  function buildTrackEntry(trackPath, opts = {}) {
-    return buildTrackEntryGlobal(trackPath, opts);
-  }
-
-  // --- Handlers ---
-
-  // Rebind Subtitle (Move)
-  socket.on('rebind-subtitle', async (data, callback) => {
-    if (!data || !data.sourceVideo || !data.targetVideo || typeof data.trackIndex !== 'number') {
-      return callback && callback({ success: false, error: 'Invalid parameters' });
-    }
-    if (!isSocketAdmin(socket.id)) {
-      return callback && callback({ success: false, error: 'Unauthorized' });
-    }
-
-    try {
-      const src = readSourceTrack(data.sourceVideo, data.trackIndex);
-      if (src.error) return callback && callback({ success: false, error: src.error });
-
-      const tgt = prepareTargetManifest(data.targetVideo);
-
-      // Resolve file on disk
-      let absoluteOldPath = path.join(TRACKS_DIR, src.track.path);
-      if (!fs.existsSync(absoluteOldPath)) {
-        if (path.isAbsolute(src.track.path) && fs.existsSync(src.track.path)) {
-          absoluteOldPath = src.track.path;
-        } else {
-          return callback && callback({ success: false, error: 'Subtitle file not found on disk' });
-        }
-      }
-
-      // Rename file
-      const ext = path.extname(absoluteOldPath);
-      const lang = src.track.lang || 'und';
-      const title = (src.track.title || 'Track').replace(/[^a-zA-Z0-9]/g, '');
-      const newFileName = `${tgt.safeBaseName}_track${tgt.nextIndex}_${lang}_${title}${ext}`;
-      const absoluteNewPath = path.join(TRACKS_DIR, newFileName);
-
-      fs.renameSync(absoluteOldPath, absoluteNewPath);
-
-      // Update target manifest
-      tgt.manifest.externalTracks.push(buildTrackEntry(newFileName, {
-        type: src.track.type || 'subtitle', lang, title: src.track.title || 'Track'
-      }));
-      fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
-
-      // Remove from source manifest
-      src.manifest.externalTracks.splice(src.arrayIndex, 1);
-      fs.writeFileSync(src.manifestPath, JSON.stringify(src.manifest, null, 2));
-
-      console.log(`[Subtitle] Rebound ${newFileName} from ${data.sourceVideo} to ${data.targetVideo}`);
-      if (callback) callback({ success: true });
-
-    } catch (e) {
-      console.error('Rebind Error:', e);
-      if (callback) callback({ success: false, error: e.message });
-    }
-  });
-
-  // Share Subtitle (Link)
-  socket.on('share-subtitle', async (data, callback) => {
-    if (!data || !data.sourceVideo || !data.targetVideo || typeof data.trackIndex !== 'number') {
-      return callback && callback({ success: false, error: 'Invalid parameters' });
-    }
-    if (!isSocketAdmin(socket.id)) {
-      return callback && callback({ success: false, error: 'Unauthorized' });
-    }
-
-    try {
-      const src = readSourceTrack(data.sourceVideo, data.trackIndex);
-      if (src.error) return callback && callback({ success: false, error: src.error });
-
-      const tgt = prepareTargetManifest(data.targetVideo);
-
-      // Check duplicate
-      if (tgt.manifest.externalTracks.some(t => t.path === src.track.path)) {
-        return callback && callback({ success: false, error: 'Subtitle is already linked to target' });
-      }
-
-      // Link (same file, just add to target manifest)
-      tgt.manifest.externalTracks.push(buildTrackEntry(src.track.path, {
-        type: src.track.type || 'subtitle',
-        lang: src.track.lang || 'und',
-        title: src.track.title || 'Track'
-      }));
-      fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
-
-      console.log(`[Subtitle] Shared ${src.track.path} from ${data.sourceVideo} to ${data.targetVideo}`);
-      if (callback) callback({ success: true });
-
-    } catch (e) {
-      console.error('Share Error:', e);
-      if (callback) callback({ success: false, error: e.message });
-    }
-  });
-
-  // Bind Orphan Subtitle (with optional SRT conversion)
-  socket.on('bind-orphan', async (data, callback) => {
-    if (!data || !data.orphanFile || !data.targetVideo) {
-      return callback && callback({ success: false, error: 'Invalid parameters' });
-    }
-    if (!isSocketAdmin(socket.id)) {
-      return callback && callback({ success: false, error: 'Unauthorized' });
-    }
-
-    const orphanFile = data.orphanFile;
-    const sourcePath = path.join(TRACKS_DIR, orphanFile);
-    if (!fs.existsSync(sourcePath)) {
-      return callback && callback({ success: false, error: 'Orphan file not found' });
-    }
-
-    try {
-      const tgt = prepareTargetManifest(data.targetVideo);
-
-      let finalSourcePath = sourcePath;
-      let ext = path.extname(sourcePath).toLowerCase();
-      let wasConverted = false;
-
-      // SRT → VTT conversion
-      if (ext === '.srt') {
-        if (ffmpegPath) {
-          const tempVttName = `${path.basename(orphanFile, '.srt')}_converted.vtt`;
-          const tempVttPath = path.join(TRACKS_DIR, tempVttName);
-          const bin = ffmpegPath();
-          try {
-            await execFileAsync(bin, ['-y', '-i', sourcePath, tempVttPath]);
-            finalSourcePath = tempVttPath;
-            ext = '.vtt';
-            wasConverted = true;
-            console.log(`[Subtitle] Converted SRT to VTT: ${tempVttName}`);
-          } catch (err) {
-            console.error('FFmpeg conversion failed:', err);
-            return callback && callback({ success: false, error: 'SRT conversion failed' });
-          }
-        } else {
-          return callback && callback({ success: false, error: 'FFmpeg not available for conversion' });
-        }
-      }
-
-      // Rename to standard name
-      const newFileName = `${tgt.safeBaseName}_track${tgt.nextIndex}_und_Orphan${ext}`;
-      const finalPath = path.join(TRACKS_DIR, newFileName);
-      fs.renameSync(finalSourcePath, finalPath);
-
-      // Clean up original SRT if converted
-      if (wasConverted && fs.existsSync(sourcePath)) {
-        try {
-          fs.unlinkSync(sourcePath);
-          console.log(`[Subtitle] Deleted original SRT: ${orphanFile}`);
-        } catch (e) { console.warn('Failed to delete original SRT', e); }
-      }
-
-      // Update manifest with normalized entry
-      tgt.manifest.externalTracks.push(buildTrackEntry(newFileName, {
-        type: 'subtitle', lang: 'und', title: 'Orphan'
-      }));
-      fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
-
-      console.log(`[Subtitle] Bound ${newFileName} to ${data.targetVideo}`);
-      if (callback) callback({ success: true });
-
-    } catch (err) {
-      console.error('Error binding orphan:', err);
-      if (callback) callback({ success: false, error: err.message });
-    }
-  });
 
   // Handle playlist set from admin
   socket.on('set-playlist', async (data) => {
@@ -3463,6 +3567,7 @@ io.on('connection', (socket) => {
 
     targetVideoState.currentTime = data.startTime || 0;
     targetVideoState.lastUpdate = Date.now();
+    targetVideoState.playbackRate = 1.0;
 
     console.log(`Playlist updated (Room: ${targetRoomCode || 'Legacy'}):`);
     console.log('- Total videos:', targetPlaylist.videos.length);
@@ -3562,6 +3667,7 @@ io.on('connection', (socket) => {
     targetVideoState.subtitleTrack = video.selectedSubtitleTrack !== undefined ? video.selectedSubtitleTrack : -1;
     targetVideoState.currentTime = 0;
     targetVideoState.lastUpdate = Date.now();
+    targetVideoState.playbackRate = 1.0;
 
     if (SERVER_MODE) {
       io.to(targetRoomCode).emit('sync', targetVideoState);
@@ -3600,6 +3706,7 @@ io.on('connection', (socket) => {
       targetVideoState.subtitleTrack = video.selectedSubtitleTrack !== undefined ? video.selectedSubtitleTrack : -1;
     }
     targetVideoState.lastUpdate = Date.now();
+    targetVideoState.playbackRate = 1.0;
 
     if (SERVER_MODE) {
       io.to(targetRoomCode).emit('sync', targetVideoState);
@@ -3652,6 +3759,7 @@ io.on('connection', (socket) => {
     targetVideoState.subtitleTrack = video.selectedSubtitleTrack !== undefined ? video.selectedSubtitleTrack : -1;
     targetVideoState.currentTime = 0;  // Reset to start of video
     targetVideoState.lastUpdate = Date.now();
+    targetVideoState.playbackRate = 1.0;
 
     if (SERVER_MODE) {
       io.to(targetRoomCode).emit('sync', targetVideoState);
@@ -4798,7 +4906,7 @@ async function generateThumbnailFfmpeg(videoPath, thumbnailPath, width, safeFile
 
       console.log(`${colors.cyan}Generating ${width}px thumbnail for ${safeFilename} at ${seekTime}s${colors.reset}`);
 
-      execFile('ffmpeg', [
+      execFile(getFFmpegBin(), [
         '-ss', String(seekTime),
         '-i', videoPath,
         '-vframes', '1',
@@ -4809,7 +4917,7 @@ async function generateThumbnailFfmpeg(videoPath, thumbnailPath, width, safeFile
       ], (error) => {
         if (error) {
           // Fallback to 1s
-          execFile('ffmpeg', [
+          execFile(getFFmpegBin(), [
             '-ss', '1',
             '-i', videoPath,
             '-vframes', '1',
