@@ -107,18 +107,10 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 > [!IMPORTANT]  
 > Beware, Tailscale only allows 3 emails per [Tailnet](https://tailscale.com/kb/1136/tailnet), but it allows a 100 devices to be connected at the same time, so it would be best if you created a new email for your friends to log into tailscale to just for this
 
-### Method 2: LAN or Public IP (Direct Hosting),
-> Best for Many people and Repeated users, complex-ish setup
-
 > [!NOTE]
 > Though many security features are implemented, other hosting methods can still be [risky for attacks](https://github.com/Lakunake/Sync-Player/issues/68)
 
-1. Make sure your selected port is open in your firewall/router
-2. Run `run.bat` in your folder
-3. Access the video player from devices at the provided links
-4. Access admin panel at `http://your-ip:port/admin` and go to `http://your-ip:port` in minecraft
-
-### Method 3: Cloud Hosting (Render, Heroku, Replit, etc.)
+### Method 2: Cloud Hosting (Render, Heroku, Replit, etc.)
 > Safe-ish..? Though hard to set up and do subsequent starts.
 
 1. Fork the repository: [https://github.com/Lakunake/Minecraft-WebDisplays-Sync-Player](https://github.com/Lakunake/Minecraft-WebDisplays-Video-Player)
@@ -131,6 +123,14 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 > Not recommended due to the free plan limitations of websites
 
 > Congratulations if you managed to deploy it successfully using Cloud Hosting...
+
+### Method 3: LAN or Public IP (Direct Hosting),
+> Best for Many people and Repeated users, complex-ish setup
+
+1. Make sure your selected port is open in your firewall/router
+2. Run `run.bat` in your folder
+3. Access the video player from devices at the provided links
+4. Access admin panel at `http://your-ip:port/admin` and go to `http://your-ip:port` in minecraft
 ---
 
 ## Firewall Warning
