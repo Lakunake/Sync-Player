@@ -16,7 +16,7 @@ A FULLY synchronized non-coder friendly HTML5 video player originally for Minecr
     * [Method 1: Direct Hosting](#method-1-lan-or-public-ip-direct-hosting)
     * [Method 2: Tailscale](#method-2-tailscale-virtual-lan)
     * [Method 3: Cloud Hosting](#method-3-cloud-hosting-render-heroku-replit-etc)
-    * [Method 4: Docker Compose(#method-4-docker-compose)]
+    * [Method 4: Docker Compose](#method-4-docker-compose)
 * [Firewall Warning](#firewall-warning)
 * [File Structure](#-file-structure)
 * [Configuration](#️-configuration)
