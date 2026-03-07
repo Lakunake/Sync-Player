@@ -1,0 +1,9 @@
+services:
+  nodeapp:
+    image: sync-player:v1.10.6
+    ports:
+      - "4000:4000"
+    env_file:
+      - config.env
+    environment:
+      SYNC_PORT: 4000

@@ -16,6 +16,7 @@ A FULLY synchronized non-coder friendly HTML5 video player originally for Minecr
     * [Method 1: Direct Hosting](#method-1-lan-or-public-ip-direct-hosting)
     * [Method 2: Tailscale](#method-2-tailscale-virtual-lan)
     * [Method 3: Cloud Hosting](#method-3-cloud-hosting-render-heroku-replit-etc)
+    * [Method 4: Docker Compose](#method-4-docker-compose)
 * [Firewall Warning](#firewall-warning)
 * [File Structure](#-file-structure)
 * [Configuration](#️-configuration)
@@ -131,6 +132,14 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 2. Run `run.bat` in your folder
 3. Access the video player from devices at the provided links
 4. Access admin panel at `http://your-ip:port/admin` and go to `http://your-ip:port` in minecraft
+
+### Method 4: Docker Compose
+
+1. `docker build . -t "sync-player:v1.10.6"`
+2. `docker compose up -d`
+3. For configurations please use the environment variables as in the docker compose example to override config.env
+
+TODO: Registry for the official Docker Image for arm, x64 arch
 ---
 
 ## Firewall Warning
