@@ -98,8 +98,7 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 > Ensure [Node.js](https://nodejs.org/) is installed before proceeding.
 > Run "npm install" at cmd in case of the auto install failing.
 
-</details>
-  <summary>### Method 1: Tailscale (Virtual LAN)</summary>
+### Method 1: Tailscale (Virtual LAN)
 > Basic to setup. *Safest way to do it as in cybersecurity.* Takes a bit longer than method one to do a subsequent start. Also gives trusted SSLs for HTTPS
 
 1. Download and install [Tailscale](https://tailscale.com/download) on everybody's computers
@@ -107,7 +106,6 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 3. Run `run.bat`, then visit the provided network link
 > [!IMPORTANT]  
 > Beware, Tailscale only allows 3 emails per [Tailnet](https://tailscale.com/kb/1136/tailnet), but it allows a 100 devices to be connected at the same time, so it would be best if you created a new email for your friends to log into tailscale to just for this
-</details>
 
 > [!CAUTION]
 > Hosting methods below are still [risky for attacks](https://github.com/Lakunake/Sync-Player/issues/68)
