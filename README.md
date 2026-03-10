@@ -101,14 +101,14 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 <details>
 <summary><b>Method 1: Tailscale (Virtual LAN)</b></summary>
 
+> [!IMPORTANT]  
+> Beware, Tailscale only allows 3 emails per [Tailnet](https://tailscale.com/kb/1136/tailnet), but it allows a 100 devices to be connected at the same time, so it would be best if you created a new email for your friends to log into tailscale to just for this
+
 > Basic to setup. *Safest way to do it as in cybersecurity.* Takes a bit longer than method one to do a subsequent start. Also gives trusted SSLs for HTTPS
 
 1. Download and install [Tailscale](https://tailscale.com/download) on everybody's computers
 2. Invite your friends to your [Tailnet](https://tailscale.com/kb/1136/tailnet)
 3. Run `run.bat`, then visit the provided network link
-
-> [!IMPORTANT]  
-> Beware, Tailscale only allows 3 emails per [Tailnet](https://tailscale.com/kb/1136/tailnet), but it allows a 100 devices to be connected at the same time, so it would be best if you created a new email for your friends to log into tailscale to just for this
 
 > [!CAUTION]
 > Hosting methods below are still [risky for attacks](https://github.com/Lakunake/Sync-Player/issues/68)
@@ -116,6 +116,9 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 
 <details>
 <summary><b>Method 2: Cloud Hosting (Render, Heroku, Replit, etc.)</b></summary>
+
+> [!WARNING]
+> Not recommended due to the free plan limitations of websites
 
 > Safe-ish..? Though hard to set up and do subsequent starts.
 
@@ -125,9 +128,6 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 4. Set start command: `node --env-file-if-exists=../config.env server.js`
 5. Set root folder to: `./res/`
 6. Deploy and access your video player via the provided URL
-
-> [!WARNING]
-> Not recommended due to the free plan limitations of websites
 
 > Congratulations if you managed to deploy it successfully using Cloud Hosting...
 </details>
