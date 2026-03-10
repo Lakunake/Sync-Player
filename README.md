@@ -101,7 +101,8 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 <details>
 <summary><b>Method 1: Tailscale (Virtual LAN)</b></summary>
 
-> [!IMPORTANT]  
+
+> [!IMPORTANT]
 > Beware, Tailscale only allows 3 emails per [Tailnet](https://tailscale.com/kb/1136/tailnet), but it allows a 100 devices to be connected at the same time, so it would be best if you created a new email for your friends to log into tailscale to just for this
 
 > Basic to setup. *Safest way to do it as in cybersecurity.* Takes a bit longer than method one to do a subsequent start. Also gives trusted SSLs for HTTPS
@@ -112,10 +113,12 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 
 > [!CAUTION]
 > Hosting methods below are still [risky for attacks](https://github.com/Lakunake/Sync-Player/issues/68)
+
 </details>
 
 <details>
 <summary><b>Method 2: Cloud Hosting (Render, Heroku, Replit, etc.)</b></summary>
+
 
 > [!WARNING]
 > Not recommended due to the free plan limitations of websites
@@ -130,10 +133,12 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 6. Deploy and access your video player via the provided URL
 
 > Congratulations if you managed to deploy it successfully using Cloud Hosting...
+
 </details>
 
 <details>
 <summary><b>Method 3: LAN or Public IP (Direct Hosting)</b></summary>
+
 
 > Best for Many people and Repeated users, complex-ish setup
 
@@ -141,6 +146,7 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 2. Run `run.bat` in your folder
 3. Access the video player from devices at the provided links
 4. Access admin panel at `http://your-ip:port/admin` and go to `http://your-ip:port` in minecraft
+
 </details>
 
 ## Firewall Warning
