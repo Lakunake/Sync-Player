@@ -2173,12 +2173,13 @@ function csrfProtection(req, res, next) {
   next();
 }
 
-app.use(express.static(ROOT_DIR));
+// Static file serving — ONLY expose specific safe directories (never the project root)
 app.use('/media', express.static(path.join(ROOT_DIR, 'media')));
 app.use('/tracks', express.static(TRACKS_DIR));
 app.use('/js', express.static(path.join(__dirname, 'js')));
 app.use('/css', express.static(path.join(__dirname, 'css')));
 app.use('/font', express.static(path.join(__dirname, 'font')));
+app.use('/img', express.static(path.join(__dirname, 'img')));
 
 // API to list available fonts
 // Helper: Extract fonts from video file (if any)
