@@ -1,8 +1,8 @@
 > [!NOTE]
-> Ensure [Node.js](https://nodejs.org/) is installed before proceeding.
-> Run "npm install" at cmd in case of the auto install failing.
+> Ensure run.bat/start.sh is ran once before proceeding
+> The list below is sorted in safety order with the lower number being safer
 
-Method 1: Tailscale (Virtual LAN)
+### Method 1: Tailscale (Virtual LAN)
 
 > [!IMPORTANT]
 > Beware, Tailscale only allows 3 emails per [Tailnet](https://tailscale.com/kb/1136/tailnet), but it allows a 100 devices to be connected at the same time, so it would be best if you created a new email for your friends to log into tailscale to just for this
@@ -13,10 +13,7 @@ Method 1: Tailscale (Virtual LAN)
 2. Invite your friends to your [Tailnet](https://tailscale.com/kb/1136/tailnet)
 3. Run `run.bat`, then visit the provided network link
 
-> [!CAUTION]
-> Hosting methods below are still [risky for attacks](https://github.com/Lakunake/Sync-Player/issues/68)
-
-Method 2: Cloud Hosting (Render, Heroku, Replit, etc.)
+### Method 2: Cloud Hosting (Render, Heroku, Replit, etc.)
   
 > [!WARNING]
 > Not recommended due to the free plan limitations of websites
@@ -32,7 +29,13 @@ Method 2: Cloud Hosting (Render, Heroku, Replit, etc.)
 
 > Congratulations if you managed to deploy it successfully using Cloud Hosting...
 
-Method 3: LAN or Public IP (Direct Hosting)
+### Method 3: Docker Compose
+
+1. `docker build . -t "sync-player:v1.10.6"`
+2. `docker compose up -d`
+3. For configurations please use the environment variables as in the docker compose example to override config.env
+
+### Method 4: LAN or Public IP (Direct Hosting)
 
 > Best for Many people and Repeated users, complex-ish setup
 
