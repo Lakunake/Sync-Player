@@ -681,7 +681,7 @@ if ($config.USE_HTTPS -eq "true" -and ($config.SSL_CERT_FILE -match "\.ts\.net" 
 # =================================================================
 $Host.UI.RawUI.WindowTitle = "Admin Console"
 Write-Host "============================" -ForegroundColor Cyan
-Write-Host "Sync-Player 1.10.6" -ForegroundColor Cyan
+Write-Host "Sync-Player 1.10.7" -ForegroundColor Cyan
 Write-Host "============================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Settings:" -ForegroundColor Yellow
