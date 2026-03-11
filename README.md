@@ -4,7 +4,7 @@ A FULLY synchronized non-coder friendly HTML5 video player originally for Minecr
 
 > Frequently Asked Questions: [FAQ](FAQ.md)
 
-## [Hosting Methods](https://github.com/Lakunake/Sync-Player/blob/main/DOCS/Hosting%20Methods.md)
+### [Read Hosting Methods Here!!](https://github.com/Lakunake/Sync-Player/blob/main/DOCS/Hosting%20Methods.md)
 
 ---
 ## Table of Contents
