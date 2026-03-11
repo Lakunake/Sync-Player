@@ -255,6 +255,24 @@ function cleanupStaleTracks() {
           // Delete JSON
           fs.unlinkSync(jsonPath);
           console.log(`[Cleanup] Deleted stale metadata: ${jsonFile}`);
+          
+          // Delete stale thumbnails
+          const THUMBNAIL_DIR = path.join(__dirname, 'img', 'thumbnails');
+          if (fs.existsSync(THUMBNAIL_DIR)) {
+            // Thumbnails match the video filename but with .jpg or .720.jpg extensions
+            const baseVideoName = videoFilename.replace(/\.[^.]+$/, '');
+            try {
+              const thumbs = fs.readdirSync(THUMBNAIL_DIR).filter(f => f.startsWith(baseVideoName));
+              for (const thumb of thumbs) {
+                const thumbPath = path.join(THUMBNAIL_DIR, thumb);
+                fs.unlinkSync(thumbPath);
+                console.log(`[Cleanup] Deleted stale thumbnail: ${thumb}`);
+              }
+            } catch (err) {
+              console.error(`[Cleanup] Error clearing thumbnails for ${baseVideoName}:`, err.message);
+            }
+          }
+          
           cleaned++;
         } else if (!trackData.lastSeen) {
           // First time missing - set lastSeen
@@ -2173,12 +2191,13 @@ function csrfProtection(req, res, next) {
   next();
 }
 
-app.use(express.static(ROOT_DIR));
+// Static file serving — ONLY expose specific safe directories (never the project root)
 app.use('/media', express.static(path.join(ROOT_DIR, 'media')));
 app.use('/tracks', express.static(TRACKS_DIR));
 app.use('/js', express.static(path.join(__dirname, 'js')));
 app.use('/css', express.static(path.join(__dirname, 'css')));
 app.use('/font', express.static(path.join(__dirname, 'font')));
+app.use('/img', express.static(path.join(__dirname, 'img')));
 
 // API to list available fonts
 // Helper: Extract fonts from video file (if any)
@@ -2719,16 +2738,17 @@ app.get('/api/tracks/:filename', tracksRateLimiter, async (req, res) => {
   }
 });
 
-// Get Windows temp directory for thumbnails (cleared on reboot)
-const os = require('os');
-const THUMBNAIL_DIR = path.join(os.tmpdir(), 'sync-player-thumbnails');
+// Get in-project directory for thumbnails (persists across reboots, auto-cleaned when stale)
+const THUMBNAIL_DIR = path.join(__dirname, 'img', 'thumbnails');
 
 // Ensure thumbnail directory exists
 if (!fs.existsSync(THUMBNAIL_DIR)) {
   fs.mkdirSync(THUMBNAIL_DIR, { recursive: true });
 }
 
-// Serve thumbnails from temp directory
+// Serve thumbnails from the new directory
+// Note: we already added a blanket /img route in the security fix, 
+// but we keep /thumbnails explicitly to prevent breaking existing client caches
 app.use('/thumbnails', express.static(THUMBNAIL_DIR));
 
 // Get video duration using node-av

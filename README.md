@@ -4,6 +4,8 @@ A FULLY synchronized non-coder friendly HTML5 video player originally for Minecr
 
 > Frequently Asked Questions: [FAQ](FAQ.md)
 
+### [Read Hosting Methods Here!!](https://github.com/Lakunake/Sync-Player/blob/main/DOCS/Hosting%20Methods.md)
+
 ---
 ## Table of Contents
 
@@ -12,11 +14,6 @@ A FULLY synchronized non-coder friendly HTML5 video player originally for Minecr
 * [Controls](#controls)
     * [Client Controls](#client-controls-touchclick-interface)
     * [Admin Controls](#admin-controls-web-interface)
-* [Hosting Tutorials](#hosting-tutorials)
-    * [Method 1: Direct Hosting](#method-1-lan-or-public-ip-direct-hosting)
-    * [Method 2: Tailscale](#method-2-tailscale-virtual-lan)
-    * [Method 3: Cloud Hosting](#method-3-cloud-hosting-render-heroku-replit-etc)
-    * [Method 4: Docker Compose](#method-4-docker-compose)
 * [Firewall Warning](#firewall-warning)
 * [File Structure](#-file-structure)
 * [Configuration](#️-configuration)
@@ -29,7 +26,7 @@ A FULLY synchronized non-coder friendly HTML5 video player originally for Minecr
 > these are auto-installed with console.ps1/run.bat so you don't have it install it yourself
 
 * [Node.js](https://nodejs.org/) installed on your machine (v20.6.0+ required for config to work)
-* [ffmpeg](https://ffmpeg.org/) installed for high bitrate support and video optimization (via [node-av](https://github.com/seydx/node-av))
+* Follow of the [Hosting Methods](https://github.com/Lakunake/Sync-Player/blob/main/DOCS/Hosting%20Methods.md)
 * Media files placed in the `/media/` folder (supports MP3, MP4, .MKV, .AVI, .MOV, .WMV, .WEBM, .PNG, .JPG, .WEBP, embeds and more)
  
 ---
@@ -91,55 +88,6 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 > [!NOTE]
 >  All users will see the same video at the same time except for **volume**, which is controlled individually per client.
 
----
-
-## Hosting Tutorials
-
-> [!NOTE]
-> Ensure [Node.js](https://nodejs.org/) is installed before proceeding.
-> Run "npm install" at cmd in case of the auto install failing.
-
-### Method 1: Tailscale (Virtual LAN) 
-> Basic to setup. *Safest way to do it as in cybersecurity.* Takes a bit longer than method one to do a subsequent start. Also gives trusted SSLs for HTTPS
-
-1. Download and install [Tailscale](https://tailscale.com/download) on everybody's computers
-2. Invite your friends to your [Tailnet](https://tailscale.com/kb/1136/tailnet)
-3. Run `run.bat`, then visit the provided network link
-> [!IMPORTANT]  
-> Beware, Tailscale only allows 3 emails per [Tailnet](https://tailscale.com/kb/1136/tailnet), but it allows a 100 devices to be connected at the same time, so it would be best if you created a new email for your friends to log into tailscale to just for this
-
-> [!CAUTION]
-> Hosting methods below are still [risky for attacks](https://github.com/Lakunake/Sync-Player/issues/68)
-
-### Method 2: Cloud Hosting (Render, Heroku, Replit, etc.)
-> Safe-ish..? Though hard to set up and do subsequent starts.
-
-1. Fork the repository: [https://github.com/Lakunake/Minecraft-WebDisplays-Sync-Player](https://github.com/Lakunake/Minecraft-WebDisplays-Video-Player)
-2. Connect your repository to your hosting service
-3. Set build command: `npm install`
-4. Set start command: `node --env-file-if-exists=../config.env server.js`
-5. Set root folder to: `./res/`
-6. Deploy and access your video player via the provided URL
-> [!WARNING]
-> Not recommended due to the free plan limitations of websites
-
-> Congratulations if you managed to deploy it successfully using Cloud Hosting...
-
-### Method 3: LAN or Public IP (Direct Hosting),
-> Best for Many people and Repeated users, complex-ish setup
-
-1. Make sure your selected port is open in your firewall/router
-2. Run `run.bat` in your folder
-3. Access the video player from devices at the provided links
-4. Access admin panel at `http://your-ip:port/admin` and go to `http://your-ip:port` in minecraft
-
-### Method 4: Docker Compose
-
-1. `docker build . -t "sync-player:v1.10.6"`
-2. `docker compose up -d`
-3. For configurations please use the environment variables as in the docker compose example to override config.env
-
-TODO: Registry for the official Docker Image for arm, x64 arch
 ---
 
 ## Firewall Warning
