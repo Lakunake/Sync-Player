@@ -29,11 +29,11 @@
 
 > Congratulations if you managed to deploy it successfully using Cloud Hosting...
 
-### Method 3: Docker Compose (not yet active)
+### Method 3: Docker Compose
 
-1. `docker build . -t "sync-player:v1.11.0"`
-2. `docker compose up -d`
-3. For configurations please use the environment variables as in the docker compose example to override config.env
+1. Make sure you have Docker installed on your system.
+2. Run `docker-compose up -d` in the project folder. (Docker will automatically download the pre-compiled Sync-Player image for your system architecture).
+3. For configurations, edit `config.env` or use environment variables inside `docker-compose.yaml` to override them.
 
 ### Method 4: LAN or Public IP (Direct Hosting)
 

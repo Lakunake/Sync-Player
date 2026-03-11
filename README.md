@@ -26,6 +26,7 @@ A FULLY synchronized non-coder friendly HTML5 video player originally for Minecr
 > these are auto-installed with console.ps1/run.bat so you don't have it install it yourself
 
 * [Node.js](https://nodejs.org/) installed on your machine (v20.6.0+ required for config to work)
+* [Docker](https://www.docker.com/) installed on your machine if you're using Docker Compose Method
 * Follow of the [Hosting Methods](https://github.com/Lakunake/Sync-Player/blob/main/DOCS/Hosting%20Methods.md)
 * Media files placed in the `/media/` folder (supports MP3, MP4, .MKV, .AVI, .MOV, .WMV, .WEBM, .PNG, .JPG, .WEBP, embeds and more)
  
