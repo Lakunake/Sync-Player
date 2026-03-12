@@ -30,6 +30,8 @@
 > Congratulations if you managed to deploy it successfully using Cloud Hosting...
 
 ### Method 3: Docker Compose
+@Aeres-u99
+
 
 1. Make sure you have [Docker](https://www.docker.com/products/docker-desktop/) installed on your machine.
 2. Run `docker-compose up -d` in the project folder.
