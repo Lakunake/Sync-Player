@@ -30,7 +30,7 @@
 > Congratulations if you managed to deploy it successfully using Cloud Hosting...
 
 ### Method 3: Docker Compose
-@Aeres-u99
+[@Aeres-u99](https://github.com/Aeres-u99)
 
 
 1. Make sure you have [Docker](https://www.docker.com/products/docker-desktop/) installed on your machine.
