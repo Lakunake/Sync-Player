@@ -1,6 +1,6 @@
 > [!NOTE]
-> Ensure run.bat/start.sh is ran once before proceeding
-> The list below is sorted in safety order with the lower number being safer
+> Ensure run.bat/start.sh is ran once before proceeding.
+> The list below is sorted in safety order with the lower number being safer.
 
 ### Method 1: Tailscale (Virtual LAN)
 
