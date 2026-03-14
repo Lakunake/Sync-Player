@@ -158,7 +158,7 @@ tools_password: [string]      # The password to ffmpeg tools tab, is encrypted w
 sync_player_key: [string]     # Encryption key, is optional and disabled by default
 subtitle_fit: bottom/strecth  # Stretch = Canvas fills screen/Bottom = Same video aspect ratio but is pinned to the bottom of the letterbox.
 show_ssl_tip: t/f             # Whether or not to show a tip that says there are SSL generation scripts in /cert
-skip_firewall_check: t/f      # See [Here](#firewall-warning)
+skip_firewall_check: t/f      # See firewall warning above
 ```
 
 ---
