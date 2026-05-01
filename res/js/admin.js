@@ -1445,24 +1445,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // BSL buttons
-  // Trigger new BSL check (prompts clients who haven't selected folder)
-  const triggerBslCheck = () => {
-    socket.emit('bsl-check-request');
-    const modal = document.getElementById('bsl-modal');
-    modal.classList.add('visible');
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        modal.classList.add('animate');
-      });
-    });
-    document.getElementById('bsl-modal-body').innerHTML =
-      '<div class="empty-message">Waiting for clients to select their local folders...</div>';
-  };
-
-  // View stored BSL status (no new prompts)
-  const viewBslStatus = () => {
-    socket.emit('bsl-get-status');
+  // BSL buttons — all three open the same modal; no auto check-request is sent
+  const openBslModal = () => {
+    socket.emit('bsl-get-status'); // Fetch latest status without prompting clients
     const modal = document.getElementById('bsl-modal');
     modal.classList.add('visible');
     requestAnimationFrame(() => {
@@ -1472,9 +1457,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   };
 
-  document.getElementById('bsl-check-btn').addEventListener('click', triggerBslCheck);
-  document.getElementById('dashboard-bsl-btn').addEventListener('click', triggerBslCheck);
-  document.getElementById('remote-bsl-btn').addEventListener('click', viewBslStatus);
+  document.getElementById('bsl-check-btn').addEventListener('click', openBslModal);
+  document.getElementById('dashboard-bsl-btn').addEventListener('click', openBslModal);
+  document.getElementById('remote-bsl-btn').addEventListener('click', openBslModal);
   document.getElementById('bsl-modal-close').addEventListener('click', () => {
     const modal = document.getElementById('bsl-modal');
     modal.classList.remove('animate');
@@ -1867,10 +1852,10 @@ socket.on('admin-auth-result', (result) => {
 let bslStatus = null;
 
 socket.on('bsl-check-started', (data) => {
-  addLog(`BSL-S² check started (${data.clientCount} clients)`, 'info');
   if (data.clientCount === 0) {
-    document.getElementById('bsl-modal-body').innerHTML =
-      '<div class="empty-message">No clients connected yet.</div>';
+    addLog(`BSL-S²: No new clients needed prompting.`, 'info');
+  } else {
+    addLog(`BSL-S²: Match request sent to ${data.clientCount} clients.`, 'info');
   }
 });
 
@@ -1888,15 +1873,49 @@ function renderBslModal(data) {
   const modalBody = dom.bslBody || document.getElementById('bsl-modal-body');
   if (!modalBody) return;
 
+  // ── Action bar (always rendered, even with no clients) ──────────────────
+  const knownClientCount = data.clients ? data.clients.length : 0;
+  const skippedCount = data.clients ? data.clients.filter(c => c.files && c.files.length === 0).length : 0;
+  const matchedCount = data.clients ? data.clients.filter(c => Object.keys(c.matchedVideos).length > 0).length : 0;
+
+  let html = `
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px; padding-bottom:14px;
+                border-bottom: 1px solid rgba(255,255,255,0.08); flex-wrap:wrap;">
+      <button id="bsl-send-request-btn"
+              onclick="bslSendMatchRequest()"
+              style="padding:8px 16px; background:#1565c0; border:none; border-radius:6px;
+                     color:#fff; cursor:pointer; font-size:13px; font-weight:600;
+                     transition: background 0.2s;"
+              onmouseover="this.style.background='#1976d2'"
+              onmouseout="this.style.background='#1565c0'">
+        📡 Send Match Request
+      </button>
+      <button id="bsl-reset-btn"
+              onclick="bslResetMatches()"
+              style="padding:8px 16px; background:#b71c1c; border:none; border-radius:6px;
+                     color:#fff; cursor:pointer; font-size:13px; font-weight:600;
+                     transition: background 0.2s;"
+              onmouseover="this.style.background='#c62828'"
+              onmouseout="this.style.background='#b71c1c'">
+        🗑 Reset Matches
+      </button>
+      <span style="color:#888; font-size:12px; margin-left:auto;">
+        Mode: <strong style="color:#aaa">${data.mode === 'all' ? 'All clients' : 'Any client'}</strong>
+        &nbsp;·&nbsp; ${knownClientCount} reported
+        ${skippedCount > 0 ? `· <span style="color:#ef9a9a">${skippedCount} skipped</span>` : ''}
+        ${matchedCount > 0 ? `· <span style="color:#a5d6a7">${matchedCount} with matches</span>` : ''}
+      </span>
+    </div>`;
+
   if (!data.clients || data.clients.length === 0) {
-    modalBody.innerHTML = '<div class="empty-message">No clients have selected folders yet</div>';
+    html += '<div class="empty-message">No clients have responded yet. Click <strong>Send Match Request</strong> to prompt them.</div>';
+    modalBody.innerHTML = html;
     return;
   }
 
-  let html = `<p style="color:#888;margin-bottom:15px;">Mode: <strong>${data.mode === 'all' ? 'All clients must have file' : 'Any client with file'}</strong></p>`;
-
   data.clients.forEach((client, clientIdx) => {
     const matchCount = Object.keys(client.matchedVideos).length;
+    const isSkipped = client.files && client.files.length === 0;
     const displayName = escapeHTML(client.clientName || `Client ${clientIdx + 1}`);
     const safeClientId = escapeHTML(client.clientId || '');
     const fingerprintShort = escapeHTML((client.clientId || '').slice(-4));
@@ -1907,26 +1926,29 @@ function renderBslModal(data) {
       <div class="bsl-client-card">
         <div class="bsl-client-header">
           <div style="display: flex; align-items: center; gap: 8px;">
-            <input type="text" 
-                   class="client-name-input" 
-                   value="${displayName}" 
+            <input type="text"
+                   class="client-name-input"
+                   value="${displayName}"
                    data-client-id="${safeClientId}"
                    title="Fingerprint: ${safeClientId}"
-                   style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); 
+                   style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
                           border-radius: 4px; padding: 4px 8px; color: white; width: 150px; font-size: 13px;"
                    onchange="setClientName(this)"
                    onkeypress="if(event.key==='Enter') this.blur()">
             <span style="color: #666; font-size: 11px;">(${fingerprintShort})</span>
+            ${isSkipped ? '<span style="color:#ef9a9a; font-size:11px; margin-left:4px;">⊘ skipped</span>' : ''}
           </div>
           <span class="bsl-badge ${matchCount > 0 ? 'bsl-positive' : 'bsl-negative'}">
-            ${matchCount}/${playlist.length} matched
+            ${isSkipped ? 'Skipped' : `${matchCount}/${playlist.length} matched`}
           </span>
         </div>
         <div class="bsl-file-list">
     `;
 
-    if (client.files.length === 0) {
-      html += '<div class="empty-message">No video files found</div>';
+    if (isSkipped) {
+      html += '<div class="empty-message" style="color:#888;">Client chose to stream from server</div>';
+    } else if (!client.files || client.files.length === 0) {
+      html += '<div class="empty-message">No video files found in selected folder</div>';
     } else {
       client.files.forEach(file => {
         const safeFileName = escapeHTML(file.name || '');
@@ -1942,21 +1964,21 @@ function renderBslModal(data) {
               ${matchedIdx !== undefined ? `
                 <div style="display: flex; align-items: center; gap: 4px;" title="Drift: offset client playback time (±60s)">
                   <span style="color: #888; font-size: 10px;">Drift:</span>
-                  <input type="number" 
+                  <input type="number"
                          class="bsl-drift-input"
                          value="${currentDrift}"
                          min="-60" max="60" step="1"
                          data-client-fingerprint="${safeClientId}"
                          data-playlist-index="${matchedIdx}"
                          onchange="handleDriftChange(this)"
-                         style="width: 50px; padding: 2px 4px; background: rgba(255,255,255,0.05); 
-                                border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; 
+                         style="width: 50px; padding: 2px 4px; background: rgba(255,255,255,0.05);
+                                border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;
                                 color: #e0e0e0; font-size: 11px; text-align: center;">
                   <span style="color: #888; font-size: 10px;">s</span>
                 </div>
               ` : ''}
-              <select class="bsl-match-select" 
-                      data-client-id="${safeSocketId}" 
+              <select class="bsl-match-select"
+                      data-client-id="${safeSocketId}"
                       data-file-name="${safeFileName}"
                       onchange="handleManualMatch(this)">
                 <option value="-1" ${!matchedIdx ? 'selected' : ''}>Not matched</option>
@@ -1974,6 +1996,34 @@ function renderBslModal(data) {
   });
 
   modalBody.innerHTML = html;
+}
+
+// Send BSL match request only to clients we have NO info on
+function bslSendMatchRequest() {
+  socket.emit('bsl-check-request');
+  addLog('BSL-S²: Match request sent to clients with no folder info', 'info');
+  // Show brief feedback on the button
+  const btn = document.getElementById('bsl-send-request-btn');
+  if (btn) {
+    const orig = btn.textContent;
+    btn.textContent = '✓ Sent!';
+    btn.disabled = true;
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
+  }
+}
+
+// Reset all in-session BSL match data (clears folderSelected status for all clients)
+function bslResetMatches() {
+  socket.emit('bsl-reset');
+  addLog('BSL-S²: All client match data reset', 'warning');
+  // Show brief feedback on the button
+  const btn = document.getElementById('bsl-reset-btn');
+  if (btn) {
+    const orig = btn.textContent;
+    btn.textContent = '✓ Reset!';
+    btn.disabled = true;
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
+  }
 }
 
 function handleDriftChange(inputEl) {

@@ -2975,6 +2975,7 @@ io.on('connection', (socket) => {
     'bsl-get-status',
     'bsl-manual-match',
     'bsl-set-drift',
+    'bsl-reset',
     'set-client-name',
     'get-client-list',
     'set-client-display-name',
@@ -4052,6 +4053,32 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Admin resets all in-session BSL status for all clients
+  socket.on('bsl-reset', () => {
+    let targetRoomCode, targetClientBslStatus;
+
+    if (SERVER_MODE) {
+      targetRoomCode = socketRoomMap.get(socket.id);
+      if (!targetRoomCode) return;
+      const room = getRoom(targetRoomCode);
+      if (!room) return;
+      if (room.adminSocketId !== socket.id) return;
+      targetClientBslStatus = room.clientBslStatus;
+    } else {
+      targetClientBslStatus = clientBslStatus;
+    }
+
+    targetClientBslStatus.clear();
+    console.log(`${colors.yellow}BSL-S� status reset by admin (Room: ${targetRoomCode || 'Legacy'})${colors.reset}`);
+
+    // Push empty status update so admin UI reflects the reset
+    if (SERVER_MODE) {
+      sendBslStatusToAdmin(targetRoomCode);
+    } else {
+      sendBslStatusToAdmin();
+    }
+  });
+
   // Client reports their local folder files
   socket.on('bsl-folder-selected', (data) => {
     let targetRoomCode, targetPlaylist, targetClientBslStatus;
@@ -4070,45 +4097,62 @@ io.on('connection', (socket) => {
     }
 
     const clientId = data.clientId || socket.id; // Fallback to socket.id if no clientId
-    console.log(`${colors.cyan}Client ${clientId} (${socket.id}) reported ${data.files.length} files (Room: ${targetRoomCode || 'Legacy'})${colors.reset}`);
 
-    // Store client's file list
+    // Null-safety: data.files may be missing/null when the client sends skipped:true
+    const clientFiles = Array.isArray(data.files) ? data.files : [];
+    console.log(`${colors.cyan}Client ${clientId} (${socket.id}) reported ${clientFiles.length} files (Room: ${targetRoomCode || 'Legacy'})${colors.reset}`);
+
+    // Store client file list and match results
     const matchedVideos = {};
 
-    // Get this client's persistent matches
+    // Get this client's persistent matches (manually confirmed in a prior session)
     const clientMatches = persistentBslMatches[clientId] || {};
 
-    // Auto-match by filename + apply persistent matches
+    // Auto-match by filename + apply persistent matches.
+    // Uses for-loops (not forEach) so that 'continue' can properly skip to the
+    // next iteration -- forEach's 'return' only exits the callback, not the outer loop.
     if (targetPlaylist.videos.length > 0) {
-      data.files.forEach(clientFile => {
-        targetPlaylist.videos.forEach((playlistVideo, index) => {
-          // Check persistent match for this client (previously saved)
+      // Track which client files have already been consumed to prevent 1-file -> N-slots
+      const matchedClientFiles = new Set();
+
+      for (const clientFile of clientFiles) {
+        for (let index = 0; index < targetPlaylist.videos.length; index++) {
+          const playlistVideo = targetPlaylist.videos[index];
+
+          // Skip playlist slots already claimed by another client file
+          if (matchedVideos[index] !== undefined) continue;
+
+          // Skip client files that already matched a playlist slot
+          if (matchedClientFiles.has(clientFile.name.toLowerCase())) continue;
+
+          // 1. Persistent match: previously manually confirmed by admin
           if (clientMatches[clientFile.name.toLowerCase()] === playlistVideo.filename.toLowerCase()) {
             matchedVideos[index] = clientFile.name;
+            matchedClientFiles.add(clientFile.name.toLowerCase());
             console.log(`${colors.cyan}  Persistent match applied: ${clientFile.name} -> playlist[${index}]${colors.reset}`);
-            return; // Skip further checks for this file
+            continue; // Consume this file, move on to next playlist slot
           }
 
-          // Advanced matching (3 of 4 criteria)
+          // 2. Advanced matching (configurable score-based)
           if (BSL_ADVANCED_MATCH) {
             let matchScore = 0;
             const SIZE_TOLERANCE = 1.5 * 1024 * 1024; // 1.5 MB in bytes
 
-            // 1. Filename match (case-insensitive)
+            // Criterion A: Filename match (case-insensitive, full basename)
             const clientBasename = clientFile.name.toLowerCase();
             const serverBasename = playlistVideo.filename.toLowerCase();
             if (clientBasename === serverBasename) {
               matchScore++;
             }
 
-            // 2. Extension match (case-insensitive)
+            // Criterion B: Extension match (case-insensitive)
             const clientExt = clientFile.name.substring(clientFile.name.lastIndexOf('.')).toLowerCase();
             const serverExt = playlistVideo.filename.substring(playlistVideo.filename.lastIndexOf('.')).toLowerCase();
             if (clientExt === serverExt) {
               matchScore++;
             }
 
-            // 3. Size match (within ±1.5MB tolerance)
+            // Criterion C: Size match (within +-1.5 MB tolerance)
             if (clientFile.size !== undefined) {
               try {
                 const serverFilePath = path.join(ROOT_DIR, 'media', playlistVideo.filename);
@@ -4118,14 +4162,15 @@ io.on('connection', (socket) => {
                   matchScore++;
                 }
               } catch (err) {
-                // If we can't stat the file, skip this criterion
+                // Cannot stat server file -- skip this criterion
                 console.log(`${colors.yellow}  Could not stat server file: ${playlistVideo.filename}${colors.reset}`);
               }
             }
 
-            // 4. MIME type match
+            // Criterion D: MIME type match (exact only)
+            // The old code used startsWith(category) which awarded a point to any two
+            // video files regardless of format (e.g. video/avi matching video/mp4).
             if (clientFile.type && clientFile.type.length > 0) {
-              // Derive expected MIME from extension
               const mimeMap = {
                 '.mp4': 'video/mp4',
                 '.mkv': 'video/x-matroska',
@@ -4140,32 +4185,36 @@ io.on('connection', (socket) => {
                 '.webp': 'image/webp'
               };
               const expectedMime = mimeMap[serverExt] || '';
-              if (clientFile.type === expectedMime || clientFile.type.startsWith(expectedMime.split('/')[0])) {
+              // Exact match only -- a broad startsWith check (e.g. 'video/') would
+              // award a point to any two video files regardless of format.
+              if (expectedMime && clientFile.type === expectedMime) {
                 matchScore++;
               }
             }
 
-            // Match if threshold or more criteria pass
+            // Apply match if enough criteria pass
             if (matchScore >= BSL_ADVANCED_MATCH_THRESHOLD) {
               matchedVideos[index] = clientFile.name;
+              matchedClientFiles.add(clientFile.name.toLowerCase());
               console.log(`${colors.green}  Advanced match (${matchScore}/4, threshold: ${BSL_ADVANCED_MATCH_THRESHOLD}): ${clientFile.name} -> playlist[${index}]${colors.reset}`);
             }
           } else {
-            // Simple filename-only matching (original behavior)
+            // Simple filename-only matching (original behavior, BSL_ADVANCED_MATCH=false)
             if (clientFile.name.toLowerCase() === playlistVideo.filename.toLowerCase()) {
               matchedVideos[index] = clientFile.name;
+              matchedClientFiles.add(clientFile.name.toLowerCase());
               console.log(`${colors.green}  Auto-matched: ${clientFile.name} -> playlist[${index}]${colors.reset}`);
             }
           }
-        });
-      });
+        }
+      }
     }
 
     targetClientBslStatus.set(socket.id, {
       clientId: clientId, // Store clientId for manual match persistence
       clientName: data.clientName || clientId.slice(-6), // Display name
       folderSelected: true,
-      files: data.files,
+      files: clientFiles,
       matchedVideos: matchedVideos
     });
 
@@ -4800,9 +4849,36 @@ async function generateAudioCoverArt(videoPath, thumbnailPath) {
       let found = false;
       for await (const packet of input.packets(coverStream.index)) {
         if (packet.streamIndex === coverStream.index) {
-          if (packet.data) {
-            fs.writeFileSync(thumbnailPath, packet.data);
-            console.log(`${colors.green}Extracted cover art to: ${thumbnailPath}${colors.reset}`);
+          if (packet.data && packet.data.length > 0) {
+            // Detect actual image format from magic bytes to avoid writing PNG data
+            // into a .jpg file (which browsers reject as a broken image).
+            const bytes = packet.data;
+            const isPng  = bytes[0] === 0x89 && bytes[1] === 0x50; // \x89P
+            const isJpeg = bytes[0] === 0xFF && bytes[1] === 0xD8;  // JFIF/EXIF
+            const isWebp = bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50; // WEBP
+
+            // Determine the correct file extension
+            let actualExt = '.jpg'; // default/assume JPEG
+            if (isPng)  actualExt = '.png';
+            else if (isWebp) actualExt = '.webp';
+            else if (!isJpeg) {
+              console.warn(`${colors.yellow}[CoverArt] Unknown image magic bytes for ${path.basename(videoPath)}, writing anyway${colors.reset}`);
+            }
+
+            // If the requested thumbnailPath has the wrong extension, use the real one
+            const actualPath = thumbnailPath.replace(/\.jpg$/, actualExt);
+            fs.writeFileSync(actualPath, bytes);
+
+            // Validate non-zero output
+            const stat = fs.statSync(actualPath);
+            if (stat.size === 0) {
+              fs.unlinkSync(actualPath);
+              console.warn(`${colors.yellow}[CoverArt] Zero-byte cover art written, discarding${colors.reset}`);
+              packet.free();
+              break;
+            }
+
+            console.log(`${colors.green}Extracted cover art to: ${actualPath}${colors.reset}`);
             found = true;
           }
           packet.free();
@@ -4828,6 +4904,7 @@ async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFile
   if (!Demuxer || !Decoder || !Encoder || !FilterAPI || !Muxer) return false;
 
   let input = null;
+  let output = null;
   try {
     console.log(`${colors.cyan}Processing thumbnail with node-av for: ${safeFilename}${colors.reset}`);
 
@@ -4838,9 +4915,13 @@ async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFile
     let isImageInput = false;
 
     if (width !== 720 && fs.existsSync(masterPath)) {
-      inputPath = masterPath;
-      isImageInput = true;
-      console.log(`${colors.cyan}Downscaling existing master thumbnail for ${safeFilename}${colors.reset}`);
+      // Verify master is non-empty before trusting it as a downscale source
+      const masterStat = fs.statSync(masterPath);
+      if (masterStat.size > 0) {
+        inputPath = masterPath;
+        isImageInput = true;
+        console.log(`${colors.cyan}Downscaling existing master thumbnail for ${safeFilename}${colors.reset}`);
+      }
     }
 
     input = await Demuxer.open(inputPath);
@@ -4853,11 +4934,17 @@ async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFile
       const seekPct = Math.max(0.01, (seed % 20) / 100);
       const seekTime = Math.max(1, Math.floor(duration * seekPct));
       console.log(`${colors.cyan}Seeking deterministically to ${seekTime}s (duration: ${duration}s)${colors.reset}`);
-      await input.seek(seekTime);
+      try {
+        await input.seek(seekTime);
+      } catch (seekErr) {
+        // Some containers (e.g. certain MPEG-TS streams) don't support seeking.
+        // Continue from the start rather than failing entirely.
+        console.warn(`${colors.yellow}[Thumbnail] Seek failed for ${safeFilename}, reading from start: ${seekErr.message}${colors.reset}`);
+      }
     }
 
     const decoder = await Decoder.create(videoStream);
-    const output = await Muxer.open(thumbnailPath, { format: 'image2', update: '1' });
+    output = await Muxer.open(thumbnailPath, { format: 'image2', update: '1' });
 
     const packetGen = input.packets(videoStream.index);
     const frameGen = decoder.frames(packetGen);
@@ -4869,7 +4956,11 @@ async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFile
 
     for await (const frame of frameGen) {
       if (!gotFrame) {
-        filter = await FilterAPI.create(`scale=-1:${width},format=yuv420p`, {
+        // Use scale=-2:height (even-rounding) instead of -1 (odd-rounding).
+        // MJPEG requires dimensions divisible by 2; -1 can produce odd widths
+        // on videos whose natural aspect ratio gives a fractional pixel count,
+        // causing "width/height not divisible by 2" encoder errors.
+        filter = await FilterAPI.create(`scale=-2:${width},format=yuv420p`, {
           width: frame.width,
           height: frame.height,
           pixelFormat: frame.format,
@@ -4900,7 +4991,24 @@ async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFile
       }
     }
 
+    // Close output before checking file size so all data is flushed to disk
+    if (output && typeof output.close === 'function') {
+      await output.close();
+      output = null;
+    }
+
     if (gotFrame) {
+      // Guard against a 0-byte file (can happen if the muxer opened successfully
+      // but no packets were actually written, e.g. encoder produced no output).
+      try {
+        const stat = fs.statSync(thumbnailPath);
+        if (stat.size === 0) {
+          fs.unlinkSync(thumbnailPath);
+          console.warn(`${colors.yellow}[Thumbnail] node-av wrote a 0-byte thumbnail for ${safeFilename}, discarding${colors.reset}`);
+          return false;
+        }
+      } catch (_) { /* stat failed — treat as missing */ return false; }
+
       console.log(`${colors.green}Generated thumbnail via node-av for: ${safeFilename}${colors.reset}`);
       return true;
     }
@@ -4908,8 +5016,13 @@ async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFile
 
   } catch (avError) {
     console.error(`${colors.yellow}node-av thumbnail failed:${colors.reset}`, avError.message);
+    // Remove any partial/empty file left by a failed muxer open or write
+    try { if (fs.existsSync(thumbnailPath)) fs.unlinkSync(thumbnailPath); } catch (_) {}
     return false;
   } finally {
+    if (output && typeof output.close === 'function') {
+      try { await output.close(); } catch (_) {}
+    }
     if (input && typeof input.close === 'function') {
       await input.close();
     }
@@ -4917,48 +5030,50 @@ async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFile
 }
 
 async function generateThumbnailFfmpeg(videoPath, thumbnailPath, width, safeFilename) {
-  return new Promise(async (resolve, reject) => {
-    try {
-      const duration = await getVideoDuration(videoPath);
-      const firstThird = Math.max(duration / 3, 1);
-      const randomTime = Math.random() * firstThird;
-      const seekTime = Math.max(1, Math.floor(randomTime));
+  const duration = await getVideoDuration(videoPath);
+  const firstThird = Math.max(duration / 3, 1);
+  const randomTime = Math.random() * firstThird;
+  const seekTime = Math.max(1, Math.floor(randomTime));
 
-      console.log(`${colors.cyan}Generating ${width}px thumbnail for ${safeFilename} at ${seekTime}s${colors.reset}`);
+  console.log(`${colors.cyan}Generating ${width}px thumbnail for ${safeFilename} at ${seekTime}s${colors.reset}`);
 
-      execFile(getFFmpegBin(), [
-        '-ss', String(seekTime),
-        '-i', videoPath,
-        '-vframes', '1',
-        '-vf', `scale=-1:${width}`,
-        '-q:v', '2',
-        '-y',
-        thumbnailPath
-      ], (error) => {
-        if (error) {
-          // Fallback to 1s
-          execFile(getFFmpegBin(), [
-            '-ss', '1',
-            '-i', videoPath,
-            '-vframes', '1',
-            '-vf', `scale=-1:${width}`,
-            '-q:v', '2',
-            '-y',
-            thumbnailPath
-          ], (err2) => {
-            if (err2) return reject(err2);
-            console.log(`${colors.green}Generated thumbnail (fallback) for: ${safeFilename}${colors.reset}`);
-            resolve();
-          });
-        } else {
-          console.log(`${colors.green}Generated thumbnail for: ${safeFilename}${colors.reset}`);
-          resolve();
+  // Use scale=-2:height (even-rounding) for FFmpeg CLI as well, matching node-av path.
+  const scaleFilter = `scale=-2:${width}`;
+
+  const runFfmpeg = (ssTime) => new Promise((resolve, reject) => {
+    execFile(getFFmpegBin(), [
+      '-ss', String(ssTime),
+      '-i', videoPath,
+      '-vframes', '1',
+      '-vf', scaleFilter,
+      '-q:v', '2',
+      '-y',
+      thumbnailPath
+    ], (error) => {
+      if (error) return reject(error);
+      // Verify the output file is present and non-empty
+      try {
+        const stat = fs.statSync(thumbnailPath);
+        if (stat.size === 0) {
+          try { fs.unlinkSync(thumbnailPath); } catch (_) {}
+          return reject(new Error('FFmpeg produced a 0-byte thumbnail'));
         }
-      });
-    } catch (e) {
-      reject(e);
-    }
+      } catch (_) {
+        return reject(new Error('Thumbnail file missing after FFmpeg completed'));
+      }
+      resolve();
+    });
   });
+
+  try {
+    await runFfmpeg(seekTime);
+    console.log(`${colors.green}Generated thumbnail for: ${safeFilename}${colors.reset}`);
+  } catch (firstErr) {
+    // Fallback: try from 1 second (handles files where the sought frame is beyond duration)
+    console.warn(`${colors.yellow}[Thumbnail] FFmpeg seek to ${seekTime}s failed for ${safeFilename}, retrying at 1s: ${firstErr.message}${colors.reset}`);
+    await runFfmpeg(1); // throws if this also fails — caught by the caller
+    console.log(`${colors.green}Generated thumbnail (fallback) for: ${safeFilename}${colors.reset}`);
+  }
 }
 
 // Function to detect available FFmpeg encoders
