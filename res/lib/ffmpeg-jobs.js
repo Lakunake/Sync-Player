@@ -102,7 +102,7 @@ async function runFfmpegJob(jobId, type, params) {
         job.duration = (job.endTime - job.startTime) / 1000;
         console.log(`[FFmpeg] Remux job ${jobId} cancelled after ${job.duration}s`);
         // Clean up partial output
-        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
+        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) { }
         return;
       }
 
@@ -185,7 +185,7 @@ async function runFfmpegJob(jobId, type, params) {
         job.endTime = Date.now();
         job.duration = (job.endTime - job.startTime) / 1000;
         console.log(`[FFmpeg] Reencode job ${jobId} cancelled after ${job.duration}s`);
-        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
+        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) { }
         return;
       }
 
@@ -206,7 +206,7 @@ async function runFfmpegJob(jobId, type, params) {
       const targetFormat = params.preset;
 
       const tracks = await extractTracksForFile(inputPath, safeFilename, trackType, targetFormat, false, null);
-      
+
       // Update job progress manually since we didn't pass ffmpegJobs to extractTracksForFile
       // (the job is this extract job itself, not a side job)
       job.status = 'completed';

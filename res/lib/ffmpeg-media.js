@@ -149,7 +149,7 @@ async function generateAudioCoverArt(videoPath, thumbnailPath) {
         if (packet.streamIndex === coverStream.index) {
           if (packet.data && packet.data.length > 0) {
             const bytes = packet.data;
-            const isPng  = bytes[0] === 0x89 && bytes[1] === 0x50;
+            const isPng = bytes[0] === 0x89 && bytes[1] === 0x50;
             const isJpeg = bytes[0] === 0xFF && bytes[1] === 0xD8;
             const isWebp = bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
 
@@ -284,10 +284,10 @@ async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFile
     return false;
   } catch (avError) {
     console.error(`${colors.yellow}node-av thumbnail failed:${colors.reset}`, avError.message);
-    try { if (fs.existsSync(thumbnailPath)) fs.unlinkSync(thumbnailPath); } catch (_) {}
+    try { if (fs.existsSync(thumbnailPath)) fs.unlinkSync(thumbnailPath); } catch (_) { }
     return false;
   } finally {
-    if (output && typeof output.close === 'function') { try { await output.close(); } catch (_) {} }
+    if (output && typeof output.close === 'function') { try { await output.close(); } catch (_) { } }
     if (input && typeof input.close === 'function') await input.close();
   }
 }
@@ -312,7 +312,7 @@ async function generateThumbnailFfmpeg(videoPath, thumbnailPath, width, safeFile
       try {
         const stat = fs.statSync(thumbnailPath);
         if (stat.size === 0) {
-          try { fs.unlinkSync(thumbnailPath); } catch (_) {}
+          try { fs.unlinkSync(thumbnailPath); } catch (_) { }
           return reject(new Error('FFmpeg produced a 0-byte thumbnail'));
         }
       } catch (_) { return reject(new Error('Thumbnail file missing after FFmpeg completed')); }
