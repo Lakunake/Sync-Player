@@ -102,71 +102,86 @@ if (!fs.existsSync(CERT_DIR)) fs.mkdirSync(CERT_DIR, { recursive: true });
 // =================================================================
 // Stale Track Cleanup - Delete tracks for media files missing > 7 days
 // =================================================================
-function cleanupStaleTracks() {
+async function cleanupStaleTracks() {
   const STALE_DAYS = 7;
   const NOW = Date.now();
   const STALE_MS = STALE_DAYS * 24 * 60 * 60 * 1000;
 
-  if (!fs.existsSync(TRACKS_MANIFEST_DIR)) return;
-
-  const jsonFiles = fs.readdirSync(TRACKS_MANIFEST_DIR).filter(f => f.endsWith('.json'));
-  let cleaned = 0;
-
-  for (const jsonFile of jsonFiles) {
-    const videoFilename = jsonFile.replace('.json', '');
-    const mediaPath = path.join(ROOT_DIR, 'media', videoFilename);
-    const jsonPath = path.join(TRACKS_MANIFEST_DIR, jsonFile);
-
-    try {
-      const trackData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
-
-      if (fs.existsSync(mediaPath)) {
-        trackData.lastSeen = NOW;
-        fs.writeFileSync(jsonPath, JSON.stringify(trackData, null, 2));
-      } else {
-        const lastSeen = trackData.lastSeen || NOW;
-
-        if (NOW - lastSeen > STALE_MS) {
-          if (trackData.externalTracks) {
-            for (const track of trackData.externalTracks) {
-              const trackPath = path.join(TRACKS_DIR, track.path);
-              if (fs.existsSync(trackPath)) {
-                fs.unlinkSync(trackPath);
-                console.log(`[Cleanup] Deleted stale track: ${track.path}`);
-              }
-            }
-          }
-          fs.unlinkSync(jsonPath);
-          console.log(`[Cleanup] Deleted stale metadata: ${jsonFile}`);
-
-          if (fs.existsSync(THUMBNAIL_DIR)) {
-            const baseVideoName = videoFilename.replace(/\.[^.]+$/, '');
-            try {
-              const thumbs = fs.readdirSync(THUMBNAIL_DIR).filter(f => f.startsWith(baseVideoName));
-              for (const thumb of thumbs) {
-                fs.unlinkSync(path.join(THUMBNAIL_DIR, thumb));
-                console.log(`[Cleanup] Deleted stale thumbnail: ${thumb}`);
-              }
-            } catch (err) {
-              console.error(`[Cleanup] Error clearing thumbnails for ${baseVideoName}:`, err.message);
-            }
-          }
-
-          cleaned++;
-        } else if (!trackData.lastSeen) {
-          trackData.lastSeen = NOW;
-          fs.writeFileSync(jsonPath, JSON.stringify(trackData, null, 2));
-        }
-      }
-    } catch (err) { /* Silently ignore corrupt files */ }
+  try {
+    await fs.promises.access(TRACKS_MANIFEST_DIR);
+  } catch {
+    return; // Directory doesn't exist
   }
 
-  if (cleaned > 0) {
-    console.log(`[Cleanup] Removed ${cleaned} stale track entries`);
+  try {
+    const files = await fs.promises.readdir(TRACKS_MANIFEST_DIR);
+    const jsonFiles = files.filter(f => f.endsWith('.json'));
+    let cleaned = 0;
+
+    const existsAsync = async (p) => fs.promises.access(p).then(() => true).catch(() => false);
+
+    for (const jsonFile of jsonFiles) {
+      const videoFilename = jsonFile.replace('.json', '');
+      const mediaPath = path.join(ROOT_DIR, 'media', videoFilename);
+      const jsonPath = path.join(TRACKS_MANIFEST_DIR, jsonFile);
+
+      try {
+        const rawData = await fs.promises.readFile(jsonPath, 'utf8');
+        const trackData = JSON.parse(rawData);
+        const mediaExists = await existsAsync(mediaPath);
+
+        if (mediaExists) {
+          trackData.lastSeen = NOW;
+          await fs.promises.writeFile(jsonPath, JSON.stringify(trackData, null, 2));
+        } else {
+          const lastSeen = trackData.lastSeen || NOW;
+
+          if (NOW - lastSeen > STALE_MS) {
+            if (trackData.externalTracks) {
+              for (const track of trackData.externalTracks) {
+                const trackPath = path.join(TRACKS_DIR, track.path);
+                if (await existsAsync(trackPath)) {
+                  await fs.promises.unlink(trackPath);
+                  console.log(`[Cleanup] Deleted stale track: ${track.path}`);
+                }
+              }
+            }
+            await fs.promises.unlink(jsonPath);
+            console.log(`[Cleanup] Deleted stale metadata: ${jsonFile}`);
+
+            if (await existsAsync(THUMBNAIL_DIR)) {
+              const baseVideoName = videoFilename.replace(/\.[^.]+$/, '');
+              try {
+                const thumbs = await fs.promises.readdir(THUMBNAIL_DIR);
+                const matchingThumbs = thumbs.filter(f => f.startsWith(baseVideoName));
+                for (const thumb of matchingThumbs) {
+                  await fs.promises.unlink(path.join(THUMBNAIL_DIR, thumb));
+                  console.log(`[Cleanup] Deleted stale thumbnail: ${thumb}`);
+                }
+              } catch (err) {
+                console.error(`[Cleanup] Error clearing thumbnails for ${baseVideoName}:`, err.message);
+              }
+            }
+
+            cleaned++;
+          } else if (!trackData.lastSeen) {
+            trackData.lastSeen = NOW;
+            await fs.promises.writeFile(jsonPath, JSON.stringify(trackData, null, 2));
+          }
+        }
+      } catch (err) { /* Silently ignore corrupt files */ }
+    }
+
+    if (cleaned > 0) {
+      console.log(`[Cleanup] Removed ${cleaned} stale track entries`);
+    }
+  } catch (err) {
+    console.error('[Cleanup] Error during stale tracks cleanup:', err.message);
   }
 }
 
-cleanupStaleTracks();
+// Fire and forget
+cleanupStaleTracks().catch(e => console.error(e));
 
 // ==================== Utility Helpers ====================
 // Helper to escape HTML to prevent XSS

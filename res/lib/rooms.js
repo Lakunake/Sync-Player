@@ -9,69 +9,74 @@ const { colors, MEMORY_DIR, SERVER_MODE } = require('./config');
 class RoomLogger {
   constructor() {
     this.generalLogFile = path.join(MEMORY_DIR, 'general.json');
+    this.adminsFile = path.join(MEMORY_DIR, 'room_admins.json');
+    this.adminsCache = null;
+    this.writeQueue = new Map(); // Ensures sequential async writes per file
     this.ensureGeneralLog();
+    this.loadAdminsSync();
+  }
+
+  // Helper to ensure file operations don't data-race each other
+  queuedUpdate(filePath, updateFn) {
+    if (!this.writeQueue.has(filePath)) {
+      this.writeQueue.set(filePath, Promise.resolve());
+    }
+
+    const task = this.writeQueue.get(filePath).then(async () => {
+      let data = null;
+      try {
+        const raw = await fs.promises.readFile(filePath, 'utf8');
+        data = JSON.parse(raw);
+      } catch (e) {}
+
+      data = updateFn(data);
+
+      if (data) {
+        await fs.promises.writeFile(filePath, JSON.stringify(data, null, 2));
+      }
+    }).catch(e => console.error('Error in write queue:', e));
+
+    this.writeQueue.set(filePath, task);
   }
 
   ensureGeneralLog() {
     if (!fs.existsSync(this.generalLogFile)) {
-      this.saveLog(this.generalLogFile, { logs: [] });
-    }
-  }
-
-  loadLog(filePath) {
-    try {
-      if (fs.existsSync(filePath)) {
-        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-      }
-    } catch (error) {
-      console.error('Error loading log:', error);
-    }
-    return { logs: [] };
-  }
-
-  saveLog(filePath, data) {
-    try {
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
-    } catch (error) {
-      console.error('Error saving log:', error);
+      fs.writeFileSync(this.generalLogFile, JSON.stringify({ logs: [] }, null, 2));
     }
   }
 
   logGeneral(event, details = {}) {
-    const logData = this.loadLog(this.generalLogFile);
-    logData.logs.push({
-      timestamp: new Date().toISOString(),
-      event,
-      ...details
+    this.queuedUpdate(this.generalLogFile, (logData) => {
+      if (!logData || !logData.logs) logData = { logs: [] };
+      logData.logs.push({
+        timestamp: new Date().toISOString(),
+        event,
+        ...details
+      });
+      if (logData.logs.length > 1000) {
+        logData.logs = logData.logs.slice(-1000);
+      }
+      return logData;
     });
-    // Keep only last 1000 entries
-    if (logData.logs.length > 1000) {
-      logData.logs = logData.logs.slice(-1000);
-    }
-    this.saveLog(this.generalLogFile, logData);
   }
 
   logRoom(roomCode, event, details = {}) {
     const roomLogFile = path.join(MEMORY_DIR, `${roomCode}.json`);
-    let logData = this.loadLog(roomLogFile);
+    this.queuedUpdate(roomLogFile, (logData) => {
+      if (!logData || !logData.logs) logData = { roomCode, logs: [] };
+      if (!logData.roomCode) logData.roomCode = roomCode;
 
-    if (!logData.roomCode) {
-      logData.roomCode = roomCode;
-      logData.logs = [];
-    }
+      logData.logs.push({
+        timestamp: new Date().toISOString(),
+        event,
+        ...details
+      });
 
-    logData.logs.push({
-      timestamp: new Date().toISOString(),
-      event,
-      ...details
+      if (logData.logs.length > 500) {
+        logData.logs = logData.logs.slice(-500);
+      }
+      return logData;
     });
-
-    // Keep only last 500 entries per room
-    if (logData.logs.length > 500) {
-      logData.logs = logData.logs.slice(-500);
-    }
-
-    this.saveLog(roomLogFile, logData);
   }
 
   initRoomLog(roomCode, roomName, createdAt) {
@@ -85,65 +90,51 @@ class RoomLogger {
         event: 'room_created'
       }]
     };
-    this.saveLog(roomLogFile, logData);
+    fs.writeFile(roomLogFile, JSON.stringify(logData, null, 2), () => {});
   }
 
   deleteRoomLog(roomCode) {
     const roomLogFile = path.join(MEMORY_DIR, `${roomCode}.json`);
-    try {
-      if (fs.existsSync(roomLogFile)) {
-        fs.unlinkSync(roomLogFile);
-      }
-    } catch (error) {
-      console.error('Error deleting room log:', error);
-    }
+    fs.unlink(roomLogFile, (err) => {
+      if (err && err.code !== 'ENOENT') console.error('Error deleting room log:', err);
+    });
   }
 
   // ==================== Admin Fingerprint Persistence ====================
-  getAdminsFile() {
-    return path.join(MEMORY_DIR, 'room_admins.json');
-  }
-
-  loadAdmins() {
+  loadAdminsSync() {
     try {
-      const adminsFile = this.getAdminsFile();
-      if (fs.existsSync(adminsFile)) {
-        return JSON.parse(fs.readFileSync(adminsFile, 'utf8'));
+      if (fs.existsSync(this.adminsFile)) {
+        this.adminsCache = JSON.parse(fs.readFileSync(this.adminsFile, 'utf8'));
       }
     } catch (error) {
       console.error('Error loading room admins:', error);
     }
-    return {};
+    if (!this.adminsCache) this.adminsCache = {};
   }
 
-  saveAdmins(admins) {
-    try {
-      fs.writeFileSync(this.getAdminsFile(), JSON.stringify(admins, null, 2));
-    } catch (error) {
-      console.error('Error saving room admins:', error);
-    }
+  saveAdminsAsync() {
+    fs.writeFile(this.adminsFile, JSON.stringify(this.adminsCache, null, 2), (err) => {
+      if (err) console.error('Error saving room admins:', err);
+    });
   }
 
   saveAdminFingerprint(roomCode, fingerprint) {
-    const admins = this.loadAdmins();
-    admins[roomCode] = {
+    this.adminsCache[roomCode] = {
       fingerprint,
       savedAt: new Date().toISOString()
     };
-    this.saveAdmins(admins);
+    this.saveAdminsAsync();
     console.log(`Admin fingerprint saved for room ${roomCode}`);
   }
 
   getAdminFingerprint(roomCode) {
-    const admins = this.loadAdmins();
-    return admins[roomCode]?.fingerprint || null;
+    return this.adminsCache[roomCode]?.fingerprint || null;
   }
 
   deleteAdminFingerprint(roomCode) {
-    const admins = this.loadAdmins();
-    if (admins[roomCode]) {
-      delete admins[roomCode];
-      this.saveAdmins(admins);
+    if (this.adminsCache[roomCode]) {
+      delete this.adminsCache[roomCode];
+      this.saveAdminsAsync();
       console.log(`Admin fingerprint deleted for room ${roomCode}`);
     }
   }

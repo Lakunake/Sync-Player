@@ -35,7 +35,9 @@ function saveBans() {
       const data = JSON.parse(fs.readFileSync(BAN_FILE, 'utf8'));
       if (data.bans) bans.push(...data.bans);
     }
-    fs.writeFileSync(BAN_FILE, JSON.stringify({ bans }, null, 2));
+    fs.writeFile(BAN_FILE, JSON.stringify({ bans }, null, 2), (err) => {
+      if (err) console.error('Error saving bans:', err);
+    });
   } catch (e) { /* silent */ }
 }
 
@@ -57,7 +59,9 @@ function banIp(ip, userAgent) {
         t: new Date().toISOString(),
         r: 'ffmpeg_auth_fail'
       });
-      fs.writeFileSync(BAN_FILE, JSON.stringify({ bans }, null, 2));
+      fs.writeFile(BAN_FILE, JSON.stringify({ bans }, null, 2), (err) => {
+        if (err) console.error('Error writing ban file:', err);
+      });
     } catch (e) { /* silent */ }
   }
 
@@ -73,7 +77,9 @@ function banIp(ip, userAgent) {
       timestamp: new Date().toISOString(),
       reason: 'ffmpeg_auth_fail'
     });
-    fs.writeFileSync(BAN_CREDS_FILE, JSON.stringify(creds, null, 2));
+    fs.writeFile(BAN_CREDS_FILE, JSON.stringify(creds, null, 2), (err) => {
+      if (err) console.error('Error writing ban creds:', err);
+    });
   } catch (e) { /* silent */ }
 }
 
@@ -181,16 +187,16 @@ function getOrCreateCsrfToken(sessionId) {
   const token = generateCsrfToken();
   csrfTokens.set(sessionId, { token, expires: Date.now() + CSRF_TOKEN_EXPIRY });
 
-  // Cleanup old tokens periodically
-  if (csrfTokens.size > 1000) {
-    const now = Date.now();
-    for (const [key, val] of csrfTokens) {
-      if (val.expires < now) csrfTokens.delete(key);
-    }
-  }
-
   return token;
 }
+
+// Cleanup old tokens periodically (every 1 hour)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of csrfTokens) {
+    if (val.expires < now) csrfTokens.delete(key);
+  }
+}, 60 * 60 * 1000);
 
 function validateCsrfToken(sessionId, token) {
   const stored = csrfTokens.get(sessionId);
