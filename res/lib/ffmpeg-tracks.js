@@ -265,7 +265,7 @@ async function extractTracksForFile(inputPath, safeFilename, trackType, targetFo
           manifest.externalTracks.push(newTrack);
         }
 
-        fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+        await fs.promises.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
       } catch (e) {
         console.error('Failed to update manifest:', e);
       }
@@ -322,7 +322,7 @@ async function extractAndShareTracks(inputPath, safeFilename, outputPath, isSide
     }));
   }
 
-  fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
+  await fs.promises.writeFile(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
   console.log(`[FFmpeg] Shared ${allTracks.length} tracks to ${outputFilename}`);
 }
 

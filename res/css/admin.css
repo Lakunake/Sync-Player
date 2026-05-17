@@ -2172,3 +2172,25 @@
       border-color: #9C27B0;
       box-shadow: 0 0 10px rgba(156, 39, 176, 0.3);
     }
+
+    /* Config Panel Styles */
+    .config-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      font-size: 13px;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .config-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px;
+      background: rgba(255,255,255,0.03);
+      border-radius: 6px;
+    }
+
+    .config-label {
+      color: #888;
+    }

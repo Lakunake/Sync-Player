@@ -240,15 +240,15 @@ async function runFfmpegJob(jobId, type, params) {
           const newFileName = `${tgt.safeBaseName}_track${tgt.nextIndex}_${lang}_${title}${ext}`;
           const absoluteNewPath = path.join(TRACKS_DIR, newFileName);
 
-          fs.renameSync(absoluteOldPath, absoluteNewPath);
+          await fs.promises.rename(absoluteOldPath, absoluteNewPath);
 
           tgt.manifest.externalTracks.push(buildTrackEntryGlobal(newFileName, {
             type: src.track.type || 'subtitle', lang, title: src.track.title || 'Track'
           }));
-          fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
+          await fs.promises.writeFile(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
 
           src.manifest.externalTracks.splice(src.arrayIndex, 1);
-          fs.writeFileSync(src.manifestPath, JSON.stringify(src.manifest, null, 2));
+          await fs.promises.writeFile(src.manifestPath, JSON.stringify(src.manifest, null, 2));
           console.log(`[Subtitle] Rebound ${newFileName} from ${sourceVideo} to ${targetVideo}`);
 
         } else if (action === 'share') {
@@ -258,7 +258,7 @@ async function runFfmpegJob(jobId, type, params) {
           tgt.manifest.externalTracks.push(buildTrackEntryGlobal(src.track.path, {
             type: src.track.type || 'subtitle', lang: src.track.lang || 'und', title: src.track.title || 'Track'
           }));
-          fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
+          await fs.promises.writeFile(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
           console.log(`[Subtitle] Shared ${src.track.path} from ${sourceVideo} to ${targetVideo}`);
         }
 
@@ -293,7 +293,7 @@ async function runFfmpegJob(jobId, type, params) {
 
         const newFileName = `${tgt.safeBaseName}_track${tgt.nextIndex}_und_Orphan${ext}`;
         const finalPath = path.join(TRACKS_DIR, newFileName);
-        fs.renameSync(finalSourcePath, finalPath);
+        await fs.promises.rename(finalSourcePath, finalPath);
 
         if (wasConverted && fs.existsSync(sourcePath)) {
           try { fs.unlinkSync(sourcePath); } catch (e) { }
@@ -302,7 +302,7 @@ async function runFfmpegJob(jobId, type, params) {
         tgt.manifest.externalTracks.push(buildTrackEntryGlobal(newFileName, {
           type: 'subtitle', lang: 'und', title: 'Orphan'
         }));
-        fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
+        await fs.promises.writeFile(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
 
         job.status = 'completed';
         job.progress = 100;

@@ -59,8 +59,28 @@ function loadMemory() {
   return { encrypted: null, clientNames: {}, bslMatches: {}, encoders: [] };
 }
 
+let memoryTimeout = null;
+
 // Save unified memory - encrypted field for admin fp, plain for rest
-function saveMemory(mem) {
+function saveMemory(mem, immediate = false) {
+  if (immediate) {
+    if (memoryTimeout) {
+      clearTimeout(memoryTimeout);
+      memoryTimeout = null;
+    }
+    _writeMemoryToDisk(mem);
+    return;
+  }
+  
+  if (!memoryTimeout) {
+    memoryTimeout = setTimeout(() => {
+      memoryTimeout = null;
+      _writeMemoryToDisk(mem);
+    }, 500);
+  }
+}
+
+function _writeMemoryToDisk(mem) {
   try {
     const toSave = {
       encrypted: mem.encrypted || null,
@@ -68,9 +88,11 @@ function saveMemory(mem) {
       bslMatches: mem.bslMatches || {},
       encoders: mem.encoders || []
     };
-    fs.writeFileSync(MEMORY_FILE, JSON.stringify(toSave, null, 2));
+    fs.writeFile(MEMORY_FILE, JSON.stringify(toSave, null, 2), (error) => {
+      if (error) console.error('Error saving memory to disk:', error);
+    });
   } catch (error) {
-    console.error('Error saving memory:', error);
+    console.error('Error preparing memory for save:', error);
   }
 }
 

@@ -2026,7 +2026,7 @@ io.on('connection', (socket) => {
   });
 
   // Client reports their local folder files
-  socket.on('bsl-folder-selected', (data) => {
+  socket.on('bsl-folder-selected', async (data) => {
     let targetRoomCode, targetPlaylist, targetClientBslStatus;
 
     if (SERVER_MODE) {
@@ -2102,7 +2102,7 @@ io.on('connection', (socket) => {
             if (clientFile.size !== undefined) {
               try {
                 const serverFilePath = path.join(ROOT_DIR, 'media', playlistVideo.filename);
-                const serverStats = fs.statSync(serverFilePath);
+                const serverStats = await fs.promises.stat(serverFilePath);
                 const sizeDiff = Math.abs(clientFile.size - serverStats.size);
                 if (sizeDiff <= SIZE_TOLERANCE) {
                   matchScore++;
