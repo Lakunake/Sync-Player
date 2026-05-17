@@ -112,7 +112,8 @@ SYNC_SKIP_FIREWALL_CHECK=true
 /memory/               # Folder containing fingerprints, logs, etc.
 /res/                  # Folder containing the app’s runtime files, server, web pages, dependencies, and launch/helper scripts.
 /cert/                 # Folder containing the SSL generation scripts for HTTPS, the generated SSLs are also stored there.
-server.js              # Node.js backend
+/res/lib/              # Folder containing the modular Node.js backend components (config, security, memory, etc.)
+server.js              # Node.js backend entrypoint
 index.html             # Client video player interface
 admin.html             # Admin control panel
 landing.html           # Page to join rooms, exclusive to server mode
@@ -135,30 +136,30 @@ subtitles.js           # wsr code
 Edit `config.env` to customize:
 
 ```ini
-port: [1024-49151]            # Server port
-volume_step: [1-20]           # Volume adjustment percentage
-skip_seconds: [5-60]          # Skip duration in seconds
-join_mode: sync/reset         # Decides what happens when a new user joins the watch party (more info in actual config)
-HTTPS: t/f                    # Whether you want to use https or not, but you also need cert and key files(check /cert)
-bsl_s2_mode: any/all          # Changing requirements of BSL-S² to if all clients should have file or not
-video_autoplay: t/f           # Explains itself
-admin_fingerprint_lock: t/f   # Generates a fingerprint from to first machine to access /admin to not let others reach it (t/f)
-bsl_advanced_match: t/f       # Whether or not if BSL-S² should use Advanced match to check if 2 given videos are the same
-...threshold: [1-4]           # How many criterias should advanced match check
-skip_intro_seconds:           # How many seconds the "Skip Intro" button jumps forward
-controls_disabled: t/f        # If controls of clients should be disabled
-sync_disabled: t/f            # If clients should keep control of their own video but should not send those controls to server and get overridden by server
-chat_enabled: t/f             # Yeah
-data_hydration: t/f           # When enabled, the server injects initial data into admin.html to save a round-trip, improves overall performance
-max_volume: [100-1000]        # How much should clients be able to crank the volume up to
-subtitle_renderer: wsr/jassub # Which subtitle renderer should be used to render .ass subtitles, wsr is generally more compatible than jassub
-disable_ban: t/f              # When ffmpeg tools password is typed incorrectly, honeypots until next refresh instead of banning.
-disable_consequences: t/f     # Whether or not honeypotting and banning an admin should happen after a failed login/spoofed fingerprint is detected
-tools_password: [string]      # The password to ffmpeg tools tab, is encrypted with SHA-256 onto RAM
-sync_player_key: [string]     # Encryption key, is optional and disabled by default
-subtitle_fit: bottom/strecth  # Stretch = Canvas fills screen/Bottom = Same video aspect ratio but is pinned to the bottom of the letterbox.
-show_ssl_tip: t/f             # Whether or not to show a tip that says there are SSL generation scripts in /cert
-skip_firewall_check: t/f      # See firewall warning above
+SYNC_PORT=3000                     # Server port (1024-49151)
+SYNC_VOLUME_STEP=5                 # Volume adjustment percentage
+SYNC_SKIP_SECONDS=5                # Skip duration in seconds
+SYNC_JOIN_MODE=sync                # Decides what happens when a new user joins the watch party
+SYNC_USE_HTTPS=true                # Whether you want to use HTTPS or not, but you also need cert and key files
+SYNC_BSL_MODE=any                  # Changing requirements of BSL-S² to if all clients should have file or not
+SYNC_VIDEO_AUTOPLAY=false          # Auto-play videos when loaded
+SYNC_ADMIN_FINGERPRINT_LOCK=false  # Generates a fingerprint from first machine to access /admin to not let others reach it
+SYNC_BSL_ADVANCED_MATCH=true       # Whether or not BSL-S² should use Advanced match to check if 2 given videos are the same
+SYNC_BSL_MATCH_THRESHOLD=1         # How many criterias should advanced match check
+SYNC_SKIP_INTRO_SECONDS=87         # How many seconds the "Skip Intro" button jumps forward
+SYNC_CLIENT_CONTROLS_DISABLED=false# If controls of clients should be disabled
+SYNC_CLIENT_SYNC_DISABLED=false    # If clients should keep control of their own video but should not send those controls to server
+SYNC_CHAT_ENABLED=true             # Yeah
+SYNC_DATA_HYDRATION=true           # When enabled, the server injects initial data into admin.html to save a round-trip
+SYNC_MAX_VOLUME=400                # How much should clients be able to crank the volume up to
+SYNC_SUBTITLE_RENDERER=jassub      # Which subtitle renderer should be used to render .ass subtitles
+SYNC_FFMPEG_DISABLE_BAN=false      # When tools password is typed incorrectly, honeypots until next refresh instead of banning
+SYNC_FFMPEG_DISABLE_CONSEQUENCES=false # Whether honeypotting and banning an admin should happen after a failed login
+SYNC_FFMPEG_TOOLS_PASSWORD=        # The password to ffmpeg tools tab, is encrypted with SHA-256 onto RAM
+SYNC_PLAYER_KEY=                   # Encryption key, is optional and disabled by default
+SYNC_SUBTITLE_FIT=bottom           # Stretch = Canvas fills screen/Bottom = Same video aspect ratio but pinned to bottom
+SYNC_SHOW_SSL_TIP=false            # Whether or not to show a tip that says there are SSL generation scripts in /cert
+SYNC_SKIP_FIREWALL_CHECK=false     # See firewall warning above
 ```
 
 ---
