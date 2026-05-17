@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const { execFile, exec } = require('child_process');
 const { colors, ROOT_DIR, MEMORY_DIR, MEDIA_DIR, THUMBNAIL_DIR } = require('./config');
 const { getFFmpegBin } = require('./ffmpeg-tracks');
+const { getEncoders, setEncoders } = require('./memory');
 
 // node-av imports
 let HardwareContext, Demuxer, Muxer, Decoder, Encoder, FilterAPI;
@@ -408,12 +409,8 @@ async function extractFonts(videoFilename) {
 
 // Encoder detection
 function detectEncoders() {
-  const memoryPath = path.join(MEMORY_DIR, 'memory.json');
-  let memData = {};
-  if (fs.existsSync(memoryPath)) {
-    try { memData = JSON.parse(fs.readFileSync(memoryPath, 'utf8')); } catch (e) {}
-  }
-  if (memData.encoders && Array.isArray(memData.encoders) && memData.encoders.length > 0) return;
+  const existingEncoders = getEncoders();
+  if (existingEncoders && existingEncoders.length > 0) return;
 
   let ffBin = 'ffmpeg';
   try {
@@ -438,11 +435,7 @@ function detectEncoders() {
         });
       }
     });
-    memData.encoders = encoders;
-    try {
-      if (!fs.existsSync(MEMORY_DIR)) fs.mkdirSync(MEMORY_DIR, { recursive: true });
-      fs.writeFileSync(memoryPath, JSON.stringify(memData, null, 2));
-    } catch (e) { console.error('[FFmpeg] Failed to save encoders:', e); }
+    setEncoders(encoders);
   });
 }
 

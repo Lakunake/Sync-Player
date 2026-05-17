@@ -39,7 +39,8 @@ function loadMemory() {
       return {
         encrypted: data.encrypted || null,
         clientNames: data.clientNames || {},
-        bslMatches: data.bslMatches || {}
+        bslMatches: data.bslMatches || {},
+        encoders: data.encoders || []
       };
     }
 
@@ -51,11 +52,11 @@ function loadMemory() {
       console.log(`${colors.green}Migrated legacy admin fingerprint${colors.reset}`);
     }
 
-    return { encrypted: encryptedFp, clientNames: {}, bslMatches: {} };
+    return { encrypted: encryptedFp, clientNames: {}, bslMatches: {}, encoders: [] };
   } catch (error) {
     console.error('Error loading memory:', error);
   }
-  return { encrypted: null, clientNames: {}, bslMatches: {} };
+  return { encrypted: null, clientNames: {}, bslMatches: {}, encoders: [] };
 }
 
 // Save unified memory - encrypted field for admin fp, plain for rest
@@ -64,7 +65,8 @@ function saveMemory(mem) {
     const toSave = {
       encrypted: mem.encrypted || null,
       clientNames: mem.clientNames || {},
-      bslMatches: mem.bslMatches || {}
+      bslMatches: mem.bslMatches || {},
+      encoders: mem.encoders || []
     };
     fs.writeFileSync(MEMORY_FILE, JSON.stringify(toSave, null, 2));
   } catch (error) {
@@ -120,6 +122,16 @@ function setBslMatch(clientId, clientFileName, playlistFileName) {
   saveMemory(memory);
 }
 
+// Encoders accessors
+function getEncoders() {
+  return memory.encoders || [];
+}
+
+function setEncoders(encoders) {
+  memory.encoders = encoders;
+  saveMemory(memory);
+}
+
 // Re-expose mutable references so server.js can refresh its local copies
 function refreshClientDisplayNames() {
   clientDisplayNames = memory.clientNames || {};
@@ -140,6 +152,8 @@ module.exports = {
   setClientName,
   getBslMatches,
   setBslMatch,
+  getEncoders,
+  setEncoders,
   get clientDisplayNames() { return clientDisplayNames; },
   set clientDisplayNames(v) { clientDisplayNames = v; },
   get persistentBslMatches() { return persistentBslMatches; },

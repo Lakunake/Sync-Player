@@ -7,6 +7,7 @@ const { spawn } = require('child_process');
 const express = require('express');
 const { colors, ROOT_DIR, TRACKS_DIR, MEMORY_DIR } = require('./config');
 const { verifyFfmpegAuth, createFfmpegAuthHandler } = require('./security');
+const { getEncoders } = require('./memory');
 const {
   getFFmpegBin,
   readSourceTrackGlobal,
@@ -74,6 +75,7 @@ async function runFfmpegJob(jobId, type, params) {
 
       for await (const packet of demuxer.packets()) {
         if (!packet) break;
+        if (job.status === 'cancelled') break;
         if (!allowedStreams.has(packet.streamIndex)) continue;
 
         if (packet.pts === AV_NOPTS_VALUE && packet.dts !== AV_NOPTS_VALUE) packet.pts = packet.dts;
@@ -94,6 +96,15 @@ async function runFfmpegJob(jobId, type, params) {
 
       await muxer.close();
       if (demuxer && demuxer.close) await demuxer.close();
+
+      if (job.status === 'cancelled') {
+        job.endTime = Date.now();
+        job.duration = (job.endTime - job.startTime) / 1000;
+        console.log(`[FFmpeg] Remux job ${jobId} cancelled after ${job.duration}s`);
+        // Clean up partial output
+        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
+        return;
+      }
 
       job.status = 'completed';
       job.progress = 100;
@@ -150,6 +161,7 @@ async function runFfmpegJob(jobId, type, params) {
         if (!packet) {
           await muxer.writePacket(null, outStreamIdx); break;
         }
+        if (job.status === 'cancelled') break;
 
         if (packet.pts === AV_NOPTS_VALUE && packet.dts !== AV_NOPTS_VALUE) packet.pts = packet.dts;
         if (packet.dts === AV_NOPTS_VALUE && packet.pts !== AV_NOPTS_VALUE) packet.dts = packet.pts;
@@ -168,6 +180,14 @@ async function runFfmpegJob(jobId, type, params) {
 
       await muxer.close();
       if (demuxer && demuxer.close) await demuxer.close();
+
+      if (job.status === 'cancelled') {
+        job.endTime = Date.now();
+        job.duration = (job.endTime - job.startTime) / 1000;
+        console.log(`[FFmpeg] Reencode job ${jobId} cancelled after ${job.duration}s`);
+        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
+        return;
+      }
 
       job.status = 'completed';
       job.progress = 100;
@@ -351,16 +371,8 @@ function registerFFmpegRoutes(app) {
 
   // List available encoders
   app.get('/api/ffmpeg/encoders', (req, res) => {
-    const memoryPath = path.join(MEMORY_DIR, 'memory.json');
-    try {
-      if (fs.existsSync(memoryPath)) {
-        const memData = JSON.parse(fs.readFileSync(memoryPath, 'utf8'));
-        if (memData.encoders) {
-          return res.json({ encoders: memData.encoders });
-        }
-      }
-    } catch (e) { /* fallthrough */ }
-    res.json({ encoders: [] });
+    const encoders = getEncoders();
+    res.json({ encoders: encoders || [] });
   });
 }
 

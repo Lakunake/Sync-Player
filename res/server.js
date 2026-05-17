@@ -1,4 +1,4 @@
-﻿// =================================================================
+// =================================================================
 // Sync-Player Server â€” Modular Architecture
 // =================================================================
 const express = require('express');
@@ -2539,7 +2539,7 @@ const syncInterval = setInterval(() => {
       if (room.videoState.isPlaying) {
         const now = Date.now();
         const elapsed = (now - room.videoState.lastUpdate) / 1000;
-        room.videoState.currentTime += elapsed;
+        room.videoState.currentTime += elapsed * (room.videoState.playbackRate || 1.0);
         room.videoState.lastUpdate = now;
       }
     });
@@ -2548,7 +2548,7 @@ const syncInterval = setInterval(() => {
     if (videoState.isPlaying) {
       const now = Date.now();
       const elapsed = (now - videoState.lastUpdate) / 1000;
-      videoState.currentTime += elapsed;
+      videoState.currentTime += elapsed * (videoState.playbackRate || 1.0);
       videoState.lastUpdate = now;
     }
   }
