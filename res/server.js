@@ -1,158 +1,57 @@
+﻿// =================================================================
+// Sync-Player Server â€” Modular Architecture
+// =================================================================
 const express = require('express');
 const http = require('http');
 const https = require('https');
 const { Server } = require('socket.io');
 const path = require('path');
 const fs = require('fs');
-const { execFile, exec, spawn } = require('child_process');
-const util = require('util');
-const execFileAsync = util.promisify(execFile);
+const { exec } = require('child_process');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { RateLimiterMemory } = require('rate-limiter-flexible');
 const cookieParser = require('cookie-parser');
 const crypto = require('crypto');
 
-// ANSI color codes for console output
-const colors = {
-  reset: '\x1b[0m',
-  blue: '\x1b[34m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  red: '\x1b[31m',
-  cyan: '\x1b[36m'
-};
+// ==================== Extracted Modules ====================
+const {
+  colors, config, ROOT_DIR, MEMORY_DIR, TRACKS_DIR, TRACKS_MANIFEST_DIR,
+  MEDIA_DIR, THUMBNAIL_DIR,
+  PORT, SKIP_SECONDS, VOLUME_STEP, JOIN_MODE, BSL_S2_MODE,
+  VIDEO_AUTOPLAY, BSL_ADVANCED_MATCH, BSL_ADVANCED_MATCH_THRESHOLD,
+  SKIP_INTRO_SECONDS, CLIENT_CONTROLS_DISABLED, CLIENT_SYNC_DISABLED,
+  CHAT_ENABLED, SERVER_MODE, DATA_HYDRATION, MAX_VOLUME,
+  SUBTITLE_RENDERER, SUBTITLE_FIT, ADMIN_FINGERPRINT_LOCK,
+  FFMPEG_DISABLE_BAN
+} = require('./lib/config');
 
-// Root directory (parent of res/ where server.js lives)
-const ROOT_DIR = path.join(__dirname, '..');
-// Memory directory for persistent data
-const MEMORY_DIR = path.join(ROOT_DIR, 'memory');
-const TRACKS_DIR = path.join(__dirname, 'tracks');
-const TRACKS_MANIFEST_DIR = path.join(MEMORY_DIR, 'tracks');
-const BAN_FILE = path.join(MEMORY_DIR, 'ban.json');
-const BAN_CREDS_FILE = path.join(MEMORY_DIR, 'ban-creds.json'); // Write-only — never read by server
+const {
+  bannedIpHashes, hashValue, isIpBanned,
+  getOrCreateCsrfToken, CSRF_TOKEN_EXPIRY, csrfProtection
+} = require('./lib/security');
 
-// ==================== Ban System (Honeypot) ====================
-const bannedIpHashes = new Set();
+const memory = require('./lib/memory');
+const {
+  getAdminFingerprint, setAdminFingerprint,
+  getClientNames, setClientName,
+  getBslMatches, setBslMatch
+} = memory;
 
-function hashValue(val) {
-  return crypto.createHash('sha256').update(String(val)).digest('hex');
-}
+const {
+  rooms, socketRoomMap, roomLogger,
+  createRoom, getRoom, deleteRoom, getPublicRooms,
+  _getTrackSelections
+} = require('./lib/rooms');
 
-function loadBans() {
-  try {
-    if (fs.existsSync(BAN_FILE)) {
-      const data = JSON.parse(fs.readFileSync(BAN_FILE, 'utf8'));
-      if (data.bans && Array.isArray(data.bans)) {
-        data.bans.forEach(b => bannedIpHashes.add(b.h));
-      }
-    }
-  } catch (e) { /* silent */ }
-}
+const { resolveContext } = require('./lib/context');
+const { registerFFmpegRoutes } = require('./lib/ffmpeg-jobs');
 
-function saveBans() {
-  try {
-    const bans = [];
-    // Read existing file to preserve full entries
-    if (fs.existsSync(BAN_FILE)) {
-      const data = JSON.parse(fs.readFileSync(BAN_FILE, 'utf8'));
-      if (data.bans) bans.push(...data.bans);
-    }
-    fs.writeFileSync(BAN_FILE, JSON.stringify({ bans }, null, 2));
-  } catch (e) { /* silent */ }
-}
-
-function banIp(ip, userAgent) {
-  const hIp = hashValue(ip);
-  if (bannedIpHashes.has(hIp)) return; // Already banned
-  bannedIpHashes.add(hIp);
-  // Append hashed entry to ban.json ONLY if persistent bans are enabled
-  if (!FFMPEG_DISABLE_BAN) {
-    try {
-      let bans = [];
-      if (fs.existsSync(BAN_FILE)) {
-        const data = JSON.parse(fs.readFileSync(BAN_FILE, 'utf8'));
-        if (data.bans) bans = data.bans;
-      }
-      bans.push({
-        h: hIp,
-        u: hashValue(userAgent || 'unknown'),
-        t: new Date().toISOString(),
-        r: 'ffmpeg_auth_fail'
-      });
-      fs.writeFileSync(BAN_FILE, JSON.stringify({ bans }, null, 2));
-    } catch (e) { /* silent */ }
-  }
-
-  // Append plaintext credentials to ban-creds.json (WRITE-ONLY — server never reads this)
-  try {
-    let creds = [];
-    if (fs.existsSync(BAN_CREDS_FILE)) {
-      creds = JSON.parse(fs.readFileSync(BAN_CREDS_FILE, 'utf8'));
-    }
-    creds.push({
-      ip: ip,
-      userAgent: userAgent || 'unknown',
-      timestamp: new Date().toISOString(),
-      reason: 'ffmpeg_auth_fail'
-    });
-    fs.writeFileSync(BAN_CREDS_FILE, JSON.stringify(creds, null, 2));
-  } catch (e) { /* silent */ }
-}
-
-function isIpBanned(ip) {
-  return bannedIpHashes.has(hashValue(ip));
-}
-
-// Flash terminal taskbar icon orange (Windows) to alert the host
-function flashTaskbar() {
-  // OSC 9;4;3;100 BEL sets taskbar state to Error (Red/Orange) in Windows Terminal and ConEmu
-  process.stdout.write('\x1b]9;4;3;100\x07');
-
-  // Standard Terminal bell (BEL) — cross-platform system beep + flash
-  process.stdout.write('\x07\x07\x07');
-
-  // Reset taskbar state after 5 seconds so it doesn't stay permanently red
-  setTimeout(() => {
-    process.stdout.write('\x1b]9;4;0;0\x07');
-  }, 5000);
-}
-
-// Load bans at startup
-loadBans();
-
-// node-av imports
-let HardwareContext, Demuxer, Muxer, Decoder, Encoder, FilterAPI;
-try {
-  const avApi = require('node-av/api');
-  HardwareContext = avApi.HardwareContext;
-  Demuxer = avApi.Demuxer;
-  Muxer = avApi.Muxer;
-  Decoder = avApi.Decoder;
-  Encoder = avApi.Encoder;
-  FilterAPI = avApi.FilterAPI;
-} catch (e) {
-  console.warn(`${colors.yellow}node-av not found or failed to load. FFmpeg features disabled.${colors.reset}`, e.message);
-}
-
-// node-av ffmpeg binary path
-let ffmpegPath;
-let isFfmpegAvailable;
-try {
-  const navFfmpeg = require('node-av/ffmpeg');
-  ffmpegPath = navFfmpeg.ffmpegPath;
-  isFfmpegAvailable = navFfmpeg.isFfmpegAvailable;
-} catch (e) {
-  console.warn('node-av/ffmpeg not found.');
-}
-
-// Resolves the ffmpeg binary: bundled node-av binary first, system PATH as fallback
-function getFFmpegBin() {
-  if (typeof isFfmpegAvailable === 'function' && isFfmpegAvailable()) {
-    return ffmpegPath();
-  }
-  return 'ffmpeg'; // system PATH fallback
-}
+const {
+  Demuxer, getVideoDuration,
+  generateAudioCoverArt, generateThumbnailNodeAv, generateThumbnailFfmpeg,
+  extractFonts, detectEncoders
+} = require('./lib/ffmpeg-media');
 
 // =================================================================
 // Startup Validation - Check if server is run from expected location
@@ -161,7 +60,6 @@ function validateStartupLocation() {
   const configPath = path.join(ROOT_DIR, 'config.env');
   const resFolder = path.basename(__dirname);
 
-  // Check if we're actually in a 'res' folder
   if (resFolder !== 'res') {
     console.log(`${colors.yellow}========================================${colors.reset}`);
     console.log(`${colors.yellow}NOTE: Unexpected server location${colors.reset}`);
@@ -176,7 +74,6 @@ function validateStartupLocation() {
     console.log('');
   }
 
-  // Check if parent directory has expected structure
   if (!fs.existsSync(configPath) && !fs.existsSync(path.join(ROOT_DIR, 'media'))) {
     console.log(`${colors.yellow}========================================${colors.reset}`);
     console.log(`${colors.yellow}NOTE: Could not find project files${colors.reset}`);
@@ -193,24 +90,14 @@ function validateStartupLocation() {
   }
 }
 
-// Check startup location (warnings only)
 validateStartupLocation();
 
-// Ensure memory and tracks directories exist
-if (!fs.existsSync(MEMORY_DIR)) {
-  fs.mkdirSync(MEMORY_DIR, { recursive: true });
-}
-if (!fs.existsSync(TRACKS_DIR)) {
-  fs.mkdirSync(TRACKS_DIR, { recursive: true });
-}
-if (!fs.existsSync(TRACKS_MANIFEST_DIR)) {
-  fs.mkdirSync(TRACKS_MANIFEST_DIR, { recursive: true });
-}
-// Ensure cert directory exists (in root)
+// Ensure directories exist
+[MEMORY_DIR, TRACKS_DIR, TRACKS_MANIFEST_DIR].forEach(dir => {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+});
 const CERT_DIR = path.join(ROOT_DIR, 'cert');
-if (!fs.existsSync(CERT_DIR)) {
-  fs.mkdirSync(CERT_DIR, { recursive: true });
-}
+if (!fs.existsSync(CERT_DIR)) fs.mkdirSync(CERT_DIR, { recursive: true });
 
 // =================================================================
 // Stale Track Cleanup - Delete tracks for media files missing > 7 days
@@ -234,15 +121,12 @@ function cleanupStaleTracks() {
       const trackData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
 
       if (fs.existsSync(mediaPath)) {
-        // Media exists - update lastSeen
         trackData.lastSeen = NOW;
         fs.writeFileSync(jsonPath, JSON.stringify(trackData, null, 2));
       } else {
-        // Media missing - check if stale
         const lastSeen = trackData.lastSeen || NOW;
 
         if (NOW - lastSeen > STALE_MS) {
-          // Delete track files
           if (trackData.externalTracks) {
             for (const track of trackData.externalTracks) {
               const trackPath = path.join(TRACKS_DIR, track.path);
@@ -252,37 +136,29 @@ function cleanupStaleTracks() {
               }
             }
           }
-          // Delete JSON
           fs.unlinkSync(jsonPath);
           console.log(`[Cleanup] Deleted stale metadata: ${jsonFile}`);
-          
-          // Delete stale thumbnails
-          const THUMBNAIL_DIR = path.join(__dirname, 'img', 'thumbnails');
+
           if (fs.existsSync(THUMBNAIL_DIR)) {
-            // Thumbnails match the video filename but with .jpg or .720.jpg extensions
             const baseVideoName = videoFilename.replace(/\.[^.]+$/, '');
             try {
               const thumbs = fs.readdirSync(THUMBNAIL_DIR).filter(f => f.startsWith(baseVideoName));
               for (const thumb of thumbs) {
-                const thumbPath = path.join(THUMBNAIL_DIR, thumb);
-                fs.unlinkSync(thumbPath);
+                fs.unlinkSync(path.join(THUMBNAIL_DIR, thumb));
                 console.log(`[Cleanup] Deleted stale thumbnail: ${thumb}`);
               }
             } catch (err) {
               console.error(`[Cleanup] Error clearing thumbnails for ${baseVideoName}:`, err.message);
             }
           }
-          
+
           cleaned++;
         } else if (!trackData.lastSeen) {
-          // First time missing - set lastSeen
           trackData.lastSeen = NOW;
           fs.writeFileSync(jsonPath, JSON.stringify(trackData, null, 2));
         }
       }
-    } catch (err) {
-      // Silently ignore corrupt files
-    }
+    } catch (err) { /* Silently ignore corrupt files */ }
   }
 
   if (cleaned > 0) {
@@ -290,216 +166,9 @@ function cleanupStaleTracks() {
   }
 }
 
-// Run cleanup at startup
 cleanupStaleTracks();
 
-// Read and parse config file
-function readConfig() {
-  const configEnvPath = path.join(ROOT_DIR, 'config.env');
-  const configTxtPath = path.join(ROOT_DIR, 'config.txt');
-
-  try {
-    // Primary: Read config.env
-    if (fs.existsSync(configEnvPath)) {
-      const configData = fs.readFileSync(configEnvPath, 'utf8');
-      const config = {};
-
-      configData.split('\n').forEach(line => {
-        line = line.trim();
-        if (line && !line.startsWith('#')) {
-          // Support both KEY=value (env format) and key: value (legacy format)
-          let key, value;
-          if (line.includes('=')) {
-            const eqIdx = line.indexOf('=');
-            key = line.substring(0, eqIdx).trim();
-            value = line.substring(eqIdx + 1).trim();
-          } else if (line.includes(':')) {
-            const parts = line.split(':');
-            key = parts.shift().trim();
-            value = parts.join(':').trim();
-          }
-          if (key && value !== undefined) {
-            // Map SYNC_* environment variable names to snake_case config keys
-            if (key.startsWith('SYNC_')) {
-              const mappedKey = key.substring(5).toLowerCase(); // SYNC_PORT -> port
-              config[mappedKey] = value;
-            } else {
-              config[key] = value;
-            }
-          }
-        }
-      });
-
-      return config;
-    }
-
-    // Migration: Read legacy config.txt and delete it
-    if (fs.existsSync(configTxtPath)) {
-      console.log(`${colors.yellow}Migrating from legacy config.txt...${colors.reset}`);
-      const configData = fs.readFileSync(configTxtPath, 'utf8');
-      const config = {};
-
-      configData.split('\n').forEach(line => {
-        line = line.trim();
-        if (line && !line.startsWith('#')) {
-          const parts = line.split(':');
-          const key = parts.shift().trim();
-          const value = parts.join(':').trim();
-          if (key && value) config[key] = value;
-        }
-      });
-
-      // Delete legacy config.txt after reading
-      fs.unlinkSync(configTxtPath);
-      console.log(`${colors.green}Migration complete. Deleted legacy config.txt${colors.reset}`);
-
-      return config;
-    }
-  } catch (error) {
-    console.error('Error reading config file:', error);
-  }
-
-  return {
-    port: '3000',
-    volume_step: '5',
-    skip_seconds: '5',
-    join_mode: 'sync',
-    use_https: 'false',
-    ssl_key_file: 'key.pem',
-    ssl_cert_file: 'cert.pem',
-    bsl_s2_mode: 'any',
-    video_autoplay: 'false',
-    admin_fingerprint_lock: 'false',
-    bsl_advanced_match: 'true',
-    bsl_advanced_match_threshold: '1',
-    skip_intro_seconds: '87',
-    client_controls_disabled: 'false',
-    client_sync_disabled: 'false',
-    server_mode: 'false',
-    chat_enabled: 'true',
-    data_hydration: 'true',
-    max_volume: '100'
-  };
-}
-
-// Config loading relies on Node.js native --env-file (see startup scripts)
-
-// Read config.env as fallback
-const fileConfig = readConfig();
-
-// Environment-first configuration with config.env fallback
-// Helper to get config value with validation
-function getConfig(envKey, fileKey, fallback, validator = null) {
-  const envValue = process.env[envKey];
-  const fileValue = fileConfig[fileKey];
-  let value = envValue !== undefined ? envValue : (fileValue !== undefined ? fileValue : fallback);
-
-  if (validator) {
-    const result = validator(value);
-    if (!result.valid) {
-      console.warn(`${colors.yellow}Warning: Invalid value for ${envKey || fileKey}: ${result.error}. Using default: ${fallback}${colors.reset}`);
-      return fallback;
-    }
-    return result.value !== undefined ? result.value : value;
-  }
-  return value;
-}
-
-// Validators
-const validators = {
-  port: (v) => {
-    const num = parseInt(v);
-    if (isNaN(num) || num < 1024 || num > 49151) {
-      return { valid: false, error: 'Must be 1024-49151' };
-    }
-    return { valid: true, value: num };
-  },
-  positiveInt: (v) => {
-    const num = parseInt(v);
-    if (isNaN(num) || num < 1) {
-      return { valid: false, error: 'Must be positive integer' };
-    }
-    return { valid: true, value: num };
-  },
-  boolean: (v) => {
-    const val = String(v).toLowerCase();
-    return { valid: true, value: val === 'true' || val === '1' };
-  },
-  booleanDefaultTrue: (v) => {
-    const val = String(v).toLowerCase();
-    return { valid: true, value: val !== 'false' && val !== '0' };
-  },
-  joinMode: (v) => {
-    if (!['sync', 'reset'].includes(v)) {
-      return { valid: false, error: 'Must be "sync" or "reset"' };
-    }
-    return { valid: true };
-  },
-  bslMode: (v) => {
-    if (!['any', 'all'].includes(v)) {
-      return { valid: false, error: 'Must be "any" or "all"' };
-    }
-    return { valid: true };
-  },
-  range: (min, max) => (v) => {
-    const num = parseInt(v);
-    if (isNaN(num) || num < min || num > max) {
-      return { valid: false, error: `Must be ${min}-${max}` };
-    }
-    return { valid: true, value: num };
-  },
-  subtitleRenderer: (v) => {
-    const val = String(v).toLowerCase();
-    if (!['wsr', 'jassub'].includes(val)) {
-      return { valid: false, error: 'Must be "wsr" or "jassub"' };
-    }
-    return { valid: true, value: val };
-  },
-  subtitleFit: (v) => {
-    const val = String(v).toLowerCase();
-    if (!['stretch', 'bottom'].includes(val)) {
-      return { valid: false, error: 'Must be "stretch" or "bottom"' };
-    }
-    return { valid: true, value: val };
-  }
-};
-
-// Build unified config object from env + file
-const config = {
-  port: String(getConfig('SYNC_PORT', 'port', '3000', validators.port)),
-  volume_step: String(getConfig('SYNC_VOLUME_STEP', 'volume_step', '5', validators.range(1, 20))),
-  skip_seconds: String(getConfig('SYNC_SKIP_SECONDS', 'skip_seconds', '5', validators.range(5, 60))),
-  join_mode: getConfig('SYNC_JOIN_MODE', 'join_mode', 'sync', validators.joinMode),
-  use_https: getConfig('SYNC_USE_HTTPS', 'use_https', 'false'),
-  ssl_key_file: getConfig('SYNC_SSL_KEY_FILE', 'ssl_key_file', 'key.pem'),
-  ssl_cert_file: getConfig('SYNC_SSL_CERT_FILE', 'ssl_cert_file', 'cert.pem'),
-  bsl_s2_mode: getConfig('SYNC_BSL_MODE', 'bsl_s2_mode', 'any', validators.bslMode),
-  video_autoplay: getConfig('SYNC_VIDEO_AUTOPLAY', 'video_autoplay', 'false'),
-  admin_fingerprint_lock: getConfig('SYNC_ADMIN_FINGERPRINT_LOCK', 'admin_fingerprint_lock', 'false'),
-  bsl_advanced_match: getConfig('SYNC_BSL_ADVANCED_MATCH', 'bsl_advanced_match', 'true'),
-  bsl_advanced_match_threshold: String(getConfig('SYNC_BSL_MATCH_THRESHOLD', 'bsl_advanced_match_threshold', '1', validators.range(1, 4))),
-  skip_intro_seconds: String(getConfig('SYNC_SKIP_INTRO_SECONDS', 'skip_intro_seconds', '87', validators.positiveInt)),
-  client_controls_disabled: getConfig('SYNC_CLIENT_CONTROLS_DISABLED', 'client_controls_disabled', 'false'),
-  client_sync_disabled: getConfig('SYNC_CLIENT_SYNC_DISABLED', 'client_sync_disabled', 'false'),
-  server_mode: getConfig('SYNC_SERVER_MODE', 'server_mode', 'false'),
-  chat_enabled: getConfig('SYNC_CHAT_ENABLED', 'chat_enabled', 'true'),
-  data_hydration: getConfig('SYNC_DATA_HYDRATION', 'data_hydration', 'true'),
-  max_volume: String(getConfig('SYNC_MAX_VOLUME', 'max_volume', '100', validators.range(100, 1000))),
-  ffmpeg_tools_password: getConfig('SYNC_FFMPEG_TOOLS_PASSWORD', 'ffmpeg_tools_password', ''),
-  subtitle_renderer: getConfig('SYNC_SUBTITLE_RENDERER', 'subtitle_renderer', 'wsr', validators.subtitleRenderer),
-  subtitle_fit: getConfig('SYNC_SUBTITLE_FIT', 'subtitle_fit', 'stretch', validators.subtitleFit)
-};
-
-// Log config source (Disabled)
-const usingEnv = Object.keys(process.env).some(k => k.startsWith('SYNC_'));
-/*
-if (usingEnv) {
-  console.log(`${colors.cyan}Configuration loaded from config.env${colors.reset}`);
-} else {
-  console.log(`${colors.cyan}Configuration loaded from config.env (legacy)${colors.reset}`);
-}
-*/
-
+// ==================== Utility Helpers ====================
 // Helper to escape HTML to prevent XSS
 function escapeHTML(text) {
   if (typeof text !== 'string') return '';
@@ -516,9 +185,7 @@ function escapeHTML(text) {
 function consolidateTime(state) {
   if (state.isPlaying) {
     const now = Date.now();
-    // Safety check for invalid lastUpdate
     if (state.lastUpdate > now) state.lastUpdate = now;
-
     const elapsed = (now - state.lastUpdate) / 1000;
     if (elapsed > 0) {
       state.currentTime += elapsed * (state.playbackRate || 1.0);
@@ -529,72 +196,47 @@ function consolidateTime(state) {
   }
 }
 
-// Filename validation for defense-in-depth (even with execFile)
-// Returns { valid: boolean, error?: string, sanitized?: string }
+// Filename validation for defense-in-depth
 function validateFilename(filename) {
-  // Check if filename is a non-empty string
   if (typeof filename !== 'string' || filename.length === 0) {
     return { valid: false, error: 'Filename must be a non-empty string' };
   }
-
-  // Check maximum length
   if (filename.length > 255) {
     return { valid: false, error: 'Filename too long (max 255 characters)' };
   }
-
-  // Reject path traversal attempts
   if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
     return { valid: false, error: 'Path traversal characters not allowed' };
   }
-
-  // Reject shell metacharacters (defense-in-depth)
   const shellMetachars = /[;&|$`<>\n\r]/;
   if (shellMetachars.test(filename)) {
     return { valid: false, error: 'Filename contains disallowed shell metacharacters' };
   }
-
-  // Whitelist: alphanumeric, spaces, hyphens, underscores, parentheses, brackets, dots
   const safePattern = /^[\w\s\-.()\[\]]+$/;
   if (!safePattern.test(filename)) {
     return { valid: false, error: 'Filename contains disallowed characters' };
   }
-
-  // Use path.basename as final sanitization
-  const sanitized = path.basename(filename);
-
-  return { valid: true, sanitized };
+  return { valid: true, sanitized: path.basename(filename) };
 }
 
+// ==================== Express / SSL Setup ====================
 const app = express();
 let server;
 
 if (config.use_https === 'true') {
   try {
-    // Helper to find cert files with fallback paths
     const findCertPath = (configuredPath, defaultName) => {
-      // 1. If configured path is explicitly set and exists, use it
       if (configuredPath && configuredPath !== defaultName) {
         const directPath = path.resolve(ROOT_DIR, configuredPath);
         if (fs.existsSync(directPath)) return directPath;
       }
-
-      // 2. Check cert/ (Highest priority for defaults - ROOT)
       const certDirPath = path.join(ROOT_DIR, 'cert', defaultName);
       if (fs.existsSync(certDirPath)) return certDirPath;
-
-      // 3. Check res/cert/ (Legacy/Moved)
       const resCertPath = path.join(ROOT_DIR, 'res', 'cert', defaultName);
       if (fs.existsSync(resCertPath)) return resCertPath;
-
-      // 4. Check res/ (Legacy)
       const resPath = path.join(ROOT_DIR, 'res', defaultName);
       if (fs.existsSync(resPath)) return resPath;
-
-      // 4. Check Root (Legacy)
       const rootPath = path.join(ROOT_DIR, defaultName);
       if (fs.existsSync(rootPath)) return rootPath;
-
-      // Default to root even if missing (to trigger error logs below)
       return path.join(ROOT_DIR, configuredPath || defaultName);
     };
 
@@ -602,19 +244,11 @@ if (config.use_https === 'true') {
     const certPath = findCertPath(config.ssl_cert_file, 'cert.pem');
 
     if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
-      const options = {
-        key: fs.readFileSync(keyPath),
-        cert: fs.readFileSync(certPath)
-      };
-      server = https.createServer(options, app);
+      server = https.createServer({ key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) }, app);
     } else {
-      console.error(`${colors.red}[SSL] Certificates not found! Expected at:${colors.reset}`);
-      if (!fs.existsSync(keyPath)) {
-        console.error(`  Missing Key: ${keyPath}`);
-      }
-      if (!fs.existsSync(certPath)) {
-        console.error(`  Missing Cert: ${certPath}`);
-      }
+      console.error(`${colors.red}[SSL] Certificates not found!${colors.reset}`);
+      if (!fs.existsSync(keyPath)) console.error(`  Missing Key: ${keyPath}`);
+      if (!fs.existsSync(certPath)) console.error(`  Missing Cert: ${certPath}`);
       console.error(`${colors.yellow}[SSL] Falling back to HTTP.${colors.reset}`);
       server = http.createServer(app);
     }
@@ -629,1477 +263,49 @@ if (config.use_https === 'true') {
 
 const io = new Server(server);
 
-const PORT = parseInt(config.port) || 3000;
-const SKIP_SECONDS = parseInt(config.skip_seconds) || 5;
-const VOLUME_STEP = parseInt(config.volume_step) || 5;
-const JOIN_MODE = config.join_mode || 'sync';
-const BSL_S2_MODE = config.bsl_s2_mode || 'any'; // 'any' or 'all'
-const VIDEO_AUTOPLAY = config.video_autoplay === 'true'; // defaults to false
-const BSL_ADVANCED_MATCH = config.bsl_advanced_match === 'true'; // defaults to true
-const BSL_ADVANCED_MATCH_THRESHOLD = Math.min(4, Math.max(1, parseInt(config.bsl_advanced_match_threshold) || 1)); // 1-4, defaults to 1
-const SKIP_INTRO_SECONDS = parseInt(config.skip_intro_seconds) || 90;
-const CLIENT_CONTROLS_DISABLED = config.client_controls_disabled === 'true'; // defaults to false
-const CLIENT_SYNC_DISABLED = getConfig('SYNC_CLIENT_SYNC_DISABLED', 'client_sync_disabled', false, validators.boolean);
-const CHAT_ENABLED = getConfig('SYNC_CHAT_ENABLED', 'chat_enabled', true, validators.boolean);
-const SERVER_MODE = getConfig('SYNC_SERVER_MODE', 'server_mode', false, validators.boolean);
-const DATA_HYDRATION = getConfig('SYNC_DATA_HYDRATION', 'data_hydration', true, validators.boolean);
-const MAX_VOLUME = getConfig('SYNC_MAX_VOLUME', 'max_volume', 400, validators.positiveInt);
-
-// Subtitle renderer: 'jassub' requires HTTPS (SharedArrayBuffer), force 'wsr' when HTTPS is off
-const SUBTITLE_RENDERER_CONFIG = config.subtitle_renderer || 'wsr';
-const SUBTITLE_RENDERER = (config.use_https === 'true' && SUBTITLE_RENDERER_CONFIG === 'jassub')
-  ? 'jassub'
-  : 'wsr';
-
-const SUBTITLE_FIT = config.subtitle_fit || 'stretch';
-
-if (SUBTITLE_RENDERER_CONFIG === 'jassub' && SUBTITLE_RENDERER === 'wsr') {
-  console.log(`${colors.yellow}JASSUB requires HTTPS. Using WSR (built-in) renderer instead.${colors.reset}`);
-  console.log(`${colors.yellow}Run generate-ssl.ps1 to enable HTTPS and JASSUB.${colors.reset}`);
-}
-
-// FFmpeg Tools Configuration
-const FFMPEG_TOOLS_PASSWORD = getConfig('SYNC_FFMPEG_TOOLS_PASSWORD', 'ffmpeg_tools_password', '');
-const FFMPEG_DISABLE_BAN = String(getConfig('SYNC_FFMPEG_DISABLE_BAN', 'ffmpeg_disable_ban', 'false')).toLowerCase() === 'true';
-const FFMPEG_DISABLE_CONSEQUENCES = String(getConfig('SYNC_FFMPEG_DISABLE_CONSEQUENCES', 'ffmpeg_disable_consequences', 'false')).toLowerCase() === 'true';
-
-// Hash the password immediately on startup if it exists
-let FFMPEG_TOOLS_PASSWORD_HASH = null;
-if (FFMPEG_TOOLS_PASSWORD) {
-  FFMPEG_TOOLS_PASSWORD_HASH = crypto.createHash('sha256').update(FFMPEG_TOOLS_PASSWORD).digest('hex');
-}
-
-// Server mode - disable console logs and enable room-based architecture
-if (SERVER_MODE) {
-  console.log(`${colors.cyan}Server mode activated, Logs are disabled!${colors.reset}`);
-  console.log(`${colors.cyan}Multi-room system enabled. Join mode forced to 'sync'.${colors.reset}`);
-  // Override console.log to suppress output (keep console.error for critical errors)
-  console.log = () => { };
-}
-
-// ==================== Room Logger System ====================
-class RoomLogger {
-  constructor() {
-    this.generalLogFile = path.join(MEMORY_DIR, 'general.json');
-    this.ensureGeneralLog();
-  }
-
-  ensureGeneralLog() {
-    if (!fs.existsSync(this.generalLogFile)) {
-      this.saveLog(this.generalLogFile, { logs: [] });
-    }
-  }
-
-  loadLog(filePath) {
-    try {
-      if (fs.existsSync(filePath)) {
-        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-      }
-    } catch (error) {
-      console.error('Error loading log:', error);
-    }
-    return { logs: [] };
-  }
-
-  saveLog(filePath, data) {
-    try {
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
-    } catch (error) {
-      console.error('Error saving log:', error);
-    }
-  }
-
-  logGeneral(event, details = {}) {
-    const logData = this.loadLog(this.generalLogFile);
-    logData.logs.push({
-      timestamp: new Date().toISOString(),
-      event,
-      ...details
-    });
-    // Keep only last 1000 entries
-    if (logData.logs.length > 1000) {
-      logData.logs = logData.logs.slice(-1000);
-    }
-    this.saveLog(this.generalLogFile, logData);
-  }
-
-  logRoom(roomCode, event, details = {}) {
-    const roomLogFile = path.join(MEMORY_DIR, `${roomCode}.json`);
-    let logData = this.loadLog(roomLogFile);
-
-    if (!logData.roomCode) {
-      logData.roomCode = roomCode;
-      logData.logs = [];
-    }
-
-    logData.logs.push({
-      timestamp: new Date().toISOString(),
-      event,
-      ...details
-    });
-
-    // Keep only last 500 entries per room
-    if (logData.logs.length > 500) {
-      logData.logs = logData.logs.slice(-500);
-    }
-
-    this.saveLog(roomLogFile, logData);
-  }
-
-  initRoomLog(roomCode, roomName, createdAt) {
-    const roomLogFile = path.join(MEMORY_DIR, `${roomCode}.json`);
-    const logData = {
-      roomCode,
-      roomName,
-      createdAt,
-      logs: [{
-        timestamp: createdAt,
-        event: 'room_created'
-      }]
-    };
-    this.saveLog(roomLogFile, logData);
-  }
-
-  deleteRoomLog(roomCode) {
-    const roomLogFile = path.join(MEMORY_DIR, `${roomCode}.json`);
-    try {
-      if (fs.existsSync(roomLogFile)) {
-        fs.unlinkSync(roomLogFile);
-      }
-    } catch (error) {
-      console.error('Error deleting room log:', error);
-    }
-  }
-
-  // ==================== Admin Fingerprint Persistence ====================
-  getAdminsFile() {
-    return path.join(MEMORY_DIR, 'room_admins.json');
-  }
-
-  loadAdmins() {
-    try {
-      const adminsFile = this.getAdminsFile();
-      if (fs.existsSync(adminsFile)) {
-        return JSON.parse(fs.readFileSync(adminsFile, 'utf8'));
-      }
-    } catch (error) {
-      console.error('Error loading room admins:', error);
-    }
-    return {};
-  }
-
-  saveAdmins(admins) {
-    try {
-      fs.writeFileSync(this.getAdminsFile(), JSON.stringify(admins, null, 2));
-    } catch (error) {
-      console.error('Error saving room admins:', error);
-    }
-  }
-
-  saveAdminFingerprint(roomCode, fingerprint) {
-    const admins = this.loadAdmins();
-    admins[roomCode] = {
-      fingerprint,
-      savedAt: new Date().toISOString()
-    };
-    this.saveAdmins(admins);
-    console.log(`Admin fingerprint saved for room ${roomCode}`);
-  }
-
-  getAdminFingerprint(roomCode) {
-    const admins = this.loadAdmins();
-    return admins[roomCode]?.fingerprint || null;
-  }
-
-  deleteAdminFingerprint(roomCode) {
-    const admins = this.loadAdmins();
-    if (admins[roomCode]) {
-      delete admins[roomCode];
-      this.saveAdmins(admins);
-      console.log(`Admin fingerprint deleted for room ${roomCode}`);
-    }
-  }
-}
-
-const roomLogger = SERVER_MODE ? new RoomLogger() : null;
-
-// ==================== FFmpeg Tools API ====================
-
-// Auth middleware for FFmpeg endpoints
-function verifyFfmpegAuth(req, res, next) {
-  // If no password configured, access is disabled (or allowed? Prompt said "lock this page under a password")
-  // Let's assume empty password = disabled/no access as per config comment
-  if (!FFMPEG_TOOLS_PASSWORD_HASH) {
-    return res.status(403).json({ error: 'FFmpeg tools are disabled (no password set)' });
-  }
-
-  const { password } = req.body;
-  if (!password) {
-    return res.status(401).json({ error: 'Password required' });
-  }
-
-  const inputHash = crypto.createHash('sha256').update(password).digest('hex');
-  if (inputHash !== FFMPEG_TOOLS_PASSWORD_HASH) {
-    return res.status(401).json({ error: 'Invalid password' });
-  }
-
-  next();
-}
-
-// Verify password endpoint
-app.post('/api/ffmpeg/auth', express.json(), (req, res) => {
-  if (!FFMPEG_TOOLS_PASSWORD_HASH) {
-    return res.status(403).json({ error: 'FFmpeg tools are disabled' });
-  }
-
-  const ip = req.ip || req.connection.remoteAddress;
-  const ua = req.headers['user-agent'] || 'unknown';
-
-  // If already banned, return fake success (socket stays alive but inert)
-  if (isIpBanned(ip)) {
-    res.json({ success: true });
-    return;
-  }
-
-  const { password } = req.body;
-  const inputHash = crypto.createHash('sha256').update(password || '').digest('hex');
-
-  if (inputHash === FFMPEG_TOOLS_PASSWORD_HASH) {
-    // Correct password — genuine access
-    res.json({ success: true });
-  } else {
-    // [NEW] If consequences are disabled, abort immediately with 401
-    if (FFMPEG_DISABLE_CONSEQUENCES) {
-      return res.status(401).json({ success: false, error: 'Invalid password' });
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // HONEYPOT — Wrong password: ban, fake success, silent disconnect
-    // ═══════════════════════════════════════════════════════════════
-    // Terminal bell (BEL) — audible alert to host
-    process.stdout.write('\x07\x07\x07');
-    flashTaskbar();
-    console.error(`\x1b[41m\x1b[37m\x1b[1m ⚠  SECURITY ALERT: FAILED FFMPEG AUTH  ⚠ \x1b[0m`);
-    console.error(`\x1b[31m   IP:         ${ip}\x1b[0m`);
-    console.error(`\x1b[31m   User-Agent: ${ua}\x1b[0m`);
-    console.error(`\x1b[31m   Time:       ${new Date().toISOString()}\x1b[0m`);
-    console.error(`\x1b[31m   Action:     BANNED + HONEYPOT ACTIVATED\x1b[0m`);
-    console.error(`\x1b[41m\x1b[37m\x1b[1m ════════════════════════════════════════ \x1b[0m`);
-
-    // Ban the IP
-    banIp(ip, ua);
-
-    // Return fake success — the attacker thinks they're in
-    res.json({ success: true });
-  }
-});
-
-
-
-// Get available hardware encoders (Placeholder for now)
-app.get('/api/ffmpeg/encoders', (req, res) => {
-  if (!HardwareContext) {
-    return res.json({ encoders: ['cpu'], hardware: [] });
-  }
-
-  const encoders = ['cpu', 'libx264', 'libx265'];
-  const hardware = [];
-
-  try {
-    // Attempt to detect hardware encoders safely
-    // Since we can't easily auto-detect without running probing,
-    // we return a list of potentially supported ones if node-av is active.
-
-    // In a real implementation we would iterate through:
-    // const hwTypes = ['cuda', 'vaapi', 'qsv', 'videotoolbox', 'd3d11va', 'vulkan', 'amf'];
-    // And try to initializing them or checking availability.
-
-    // For now, let's indicate that node-av is active and capabilities are present.
-    // We will list all common hardware encoders as 'available' to selection if node-av is present,
-    // and let FFmpeg error out if the specific hardware isn't actually there (handled by UI warnings).
-
-    // Common HW Encoders
-    encoders.push('h264_nvenc', 'hevc_nvenc'); // NVIDIA
-    encoders.push('h264_amf', 'hevc_amf');     // AMD
-    encoders.push('h264_qsv', 'hevc_qsv');     // Intel
-    res.json({ encoders: encoders, hardware: hardware, note: "All supported HW encoders listed" });
-  } catch (e) {
-    console.error('Error detecting encoders:', e);
-    res.json({ encoders: ['cpu'], error: e.message });
-  }
-});
-// =================================================================
-// Track Manifest Helpers (module scope — used by FFmpeg jobs and socket handlers)
-// =================================================================
-// Read a source video's manifest and pick out a specific track by its index.
-function readSourceTrackGlobal(videoFile, trackIdx) {
-  const manifestName = path.basename(videoFile) + '.json';
-  const manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestName);
-
-  if (!fs.existsSync(manifestPath)) {
-    return { error: 'Source video does not have a track manifest.' };
-  }
-
-  try {
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    const externalTracks = manifest.externalTracks || [];
-
-    // External tracks from the UI are offset by 1000 to distinguish them from internal streams
-    const arrayIndex = trackIdx >= 1000 ? trackIdx - 1000 : parseInt(trackIdx);
-    const track = externalTracks[arrayIndex];
-
-    if (!track) {
-      return { error: `Specified track does not exist in the source manifest (tried index ${arrayIndex}).` };
-    }
-
-    return { manifest, manifestPath, track, arrayIndex };
-  } catch (e) {
-    return { error: 'Failed to parse source manifest: ' + e.message };
-  }
-}
-
-// Load (or create) a target manifest, find the next safe track index, and return naming helpers
-function prepareTargetManifestGlobal(targetVideo) {
-  const manifestName = path.basename(targetVideo) + '.json';
-  const manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestName);
-  let manifest = { externalTracks: [] };
-
-  if (fs.existsSync(manifestPath)) {
-    try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch (e) { }
-  }
-  if (!manifest.externalTracks) manifest.externalTracks = [];
-
-  // Find next safe track index from existing entries
-  let maxIndex = -1;
-  manifest.externalTracks.forEach(t => {
-    if (t.path) {
-      const match = t.path.match(/_track(\d+)_/);
-      if (match) {
-        const idx = parseInt(match[1]);
-        if (idx > maxIndex) maxIndex = idx;
-      }
-    }
-  });
-
-  return {
-    manifest,
-    manifestPath,
-    nextIndex: maxIndex + 1,
-    safeBaseName: path.basename(targetVideo).replace(/\.[^/.]+$/, '')
-  };
-}
-
-// Build a normalized track entry for writing to manifests
-function buildTrackEntryGlobal(trackPath, opts = {}) {
-  return {
-    type: opts.type || 'subtitle',
-    lang: opts.lang || 'und',
-    title: opts.title || 'Track',
-    isExternal: true,
-    path: trackPath,
-    url: `/tracks/${trackPath}`
-  };
-}
-
-// =================================================================
-// Extract tracks from a video file (reusable helper)
-// Returns array of { path, type, lang, title } for each extracted track
-// Skips tracks that already have an output file in TRACKS_DIR
-// =================================================================
-async function extractTracksForFile(inputPath, safeFilename, trackType, targetFormat, isSideJob = false) {
-  if (!Demuxer) throw new Error('node-av Demuxer not available');
-
-  const demuxer = await Demuxer.open(inputPath);
-  const extractedTracks = [];
-
-  try {
-    let matchingStreams = [];
-    if (trackType === 'audio') {
-      matchingStreams = demuxer.streams.filter(s => s.codecpar?.type === 'audio' || s.codecpar?.codecType === 1);
-    } else {
-      matchingStreams = demuxer.streams.filter(s => s.codecpar?.type === 'subtitle' || s.codecpar?.codecType === 3);
-    }
-
-    if (matchingStreams.length === 0) return extractedTracks; // No streams of this type, not an error
-
-    let job = null;
-    if (isSideJob) {
-      const jobId = 'extract_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
-      job = {
-        id: jobId,
-        type: trackType === 'subtitle' ? 'extract-sub' : 'extract-audio',
-        filename: safeFilename,
-        status: 'running',
-        progress: 0,
-        startTime: Date.now()
-      };
-      ffmpegJobs.push(job);
-    }
-
-    const originalExt = path.extname(safeFilename);
-    const baseName = path.basename(safeFilename, originalExt);
-
-    let ext = targetFormat;
-    if (trackType === 'subtitle') {
-      ext = (targetFormat === 'ass') ? 'ass' : 'vtt';
-    } else if (trackType === 'audio' && targetFormat === 'aac') {
-      ext = 'm4a'; // AAC in MP4 container for seekable browser playback
-      // mp3 stays .mp3 — Xing header handles seeking natively
-      // flac stays .flac — built-in SEEKTABLE handles seeking
-    }
-
-    for (let i = 0; i < matchingStreams.length; i++) {
-      const stream = matchingStreams[i];
-      const meta = stream.metadata?.getAll?.() || {};
-      const lang = meta.language || 'und';
-      const title = meta.title || meta.handler_name || (trackType === 'audio' ? `Audio Track ${stream.index}` : `Subtitle Track ${stream.index}`);
-      const safeTitle = title.replace(/[^a-zA-Z0-9_\-\.]/g, '_').substring(0, 50);
-
-      const outputFilename = `${baseName}_track${stream.index}_${lang}_${safeTitle}.${ext}`;
-      const outputUrl = path.join(TRACKS_DIR, outputFilename);
-
-      // Skip if already extracted
-      if (fs.existsSync(outputUrl)) {
-        console.log(`[FFmpeg] Track already exists, skipping: ${outputFilename}`);
-        extractedTracks.push({ path: outputFilename, type: trackType, lang, title });
-
-        if (job) {
-          job.progress = Math.round(((i + 1) / matchingStreams.length) * 100);
-          if (i === matchingStreams.length - 1) {
-            job.status = 'completed';
-            job.endTime = Date.now();
-            job.duration = (job.endTime - job.startTime) / 1000;
-          }
-        }
-
-        continue;
-      }
-
-      console.log(`[FFmpeg] Extracting stream ${stream.index} (${lang}) to: ${outputUrl}`);
-
-      const args = ['-i', inputPath, '-map', `0:${stream.index}`, '-y'];
-
-      if (trackType === 'audio') {
-        if (targetFormat === 'mp3') {
-          // Raw MP3 — Xing header (written by libmp3lame VBR) handles browser seeking
-          args.push('-c:a', 'libmp3lame', '-q:a', '2');
-        } else if (targetFormat === 'aac' || targetFormat === 'm4a') {
-          // Output as M4A (AAC in MP4 container) for proper browser seeking
-          // Raw AAC has no seek table — M4A's moov atom enables HTTP Range seeking
-          args.push('-f', 'mp4', '-movflags', '+faststart');
-          if (stream.codec_name === 'aac') {
-            args.push('-c:a', 'copy');
-          } else {
-            args.push('-c:a', 'aac', '-b:a', '192k');
-          }
-        } else if (targetFormat === 'flac') {
-          args.push('-c:a', 'flac');
-        } else {
-          args.push('-c:a', 'copy');
-        }
-      } else {
-        if (ext === 'ass') {
-          args.push('-c:s', 'ass');
-        } else {
-          args.push('-c:s', 'webvtt');
-        }
-      }
-
-      args.push(outputUrl);
-
-      // Pre-fetch duration for percentage maths
-      const totalDuration = await getVideoDuration(inputPath);
-      let lastExtractUpdate = Date.now();
-
-      await new Promise((resolve, reject) => {
-        const proc = spawn(getFFmpegBin(), args);
-
-        proc.stderr.on('data', (data) => {
-          if (!job) return;
-
-          if (Date.now() - lastExtractUpdate < 3000) return;
-
-          const text = data.toString();
-          const timeMatch = text.match(/time=(\d{2}):(\d{2}):(\d{2})\.\d{2}/);
-          if (timeMatch && totalDuration > 0) {
-            const hours = parseInt(timeMatch[1], 10);
-            const minutes = parseInt(timeMatch[2], 10);
-            const seconds = parseInt(timeMatch[3], 10);
-            const elapsed = (hours * 3600) + (minutes * 60) + seconds;
-
-            // Adjust progress relative to how many tracks we have 
-            // ex: if 2 tracks total, the first track maps 0-50%, the second 50-100%
-            const baseProgress = (i / matchingStreams.length) * 100;
-            const chunkProgress = (elapsed / totalDuration) * (100 / matchingStreams.length);
-            job.progress = Math.min(Math.round(baseProgress + chunkProgress), 100);
-            lastExtractUpdate = Date.now();
-          }
-        });
-
-        proc.on('close', async (code) => {
-          if (code === 0) {
-            if (targetFormat === 'vtt' || ext === 'vtt') {
-              await cleanVttFile(outputUrl);
-            }
-            if (job) {
-              job.progress = Math.round(((i + 1) / matchingStreams.length) * 100);
-              if (i === matchingStreams.length - 1) {
-                job.status = 'completed';
-                job.endTime = Date.now();
-                job.duration = (job.endTime - job.startTime) / 1000;
-              }
-            }
-            resolve();
-          } else {
-            if (job) {
-              job.status = 'error';
-              job.error = `FFmpeg exited with code ${code}`;
-              job.endTime = Date.now();
-            }
-            reject(new Error(`FFmpeg exited with code ${code}`));
-          }
-        });
-        proc.on('error', (err) => reject(err));
-      });
-
-      // Update manifest for the source video
-      try {
-        const manifestFilename = safeFilename + '.json';
-        const manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestFilename);
-        let manifest = { externalTracks: [] };
-
-        if (fs.existsSync(manifestPath)) {
-          try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch (e) { }
-        }
-
-        const existingIdx = manifest.externalTracks.findIndex(t => t.path === outputFilename);
-        const newTrack = buildTrackEntryGlobal(outputFilename, { type: trackType, lang, title });
-
-        if (existingIdx >= 0) {
-          manifest.externalTracks[existingIdx] = newTrack;
-        } else {
-          manifest.externalTracks.push(newTrack);
-        }
-
-        fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-      } catch (e) {
-        console.error('Failed to update manifest:', e);
-      }
-
-      extractedTracks.push({ path: outputFilename, type: trackType, lang, title });
-    }
-  } finally {
-    if (demuxer && typeof demuxer.close === 'function') {
-      await demuxer.close();
-    }
-  }
-
-  return extractedTracks;
-}
-
-// =================================================================
-// Post-completion: Extract all tracks from original and share to output
-// =================================================================
-async function extractAndShareTracks(inputPath, safeFilename, outputPath, isSideJob = false) {
-  const outputFilename = path.basename(outputPath);
-  console.log(`[FFmpeg] Auto-extracting tracks from ${safeFilename} and sharing to ${outputFilename}...`);
-
-  let allTracks = [];
-
-  // Extract subtitles (VTT)
-  try {
-    const subTracks = await extractTracksForFile(inputPath, safeFilename, 'subtitle', 'vtt', isSideJob);
-    allTracks = allTracks.concat(subTracks);
-  } catch (e) {
-    console.warn('[FFmpeg] Subtitle extraction skipped:', e.message);
-  }
-
-  // Extract audio (AAC)
-  try {
-    const audioTracks = await extractTracksForFile(inputPath, safeFilename, 'audio', 'aac', isSideJob);
-    allTracks = allTracks.concat(audioTracks);
-  } catch (e) {
-    console.warn('[FFmpeg] Audio extraction skipped:', e.message);
-  }
-
-  if (allTracks.length === 0) {
-    console.log(`[FFmpeg] No tracks found to share with ${outputFilename}`);
-    return;
-  }
-
-  // Share all extracted tracks to the output video's manifest
-  const tgt = prepareTargetManifestGlobal(outputFilename);
-
-  for (const track of allTracks) {
-    // Skip if already linked
-    if (tgt.manifest.externalTracks.some(t => t.path === track.path)) {
-      continue;
-    }
-    tgt.manifest.externalTracks.push(buildTrackEntryGlobal(track.path, {
-      type: track.type,
-      lang: track.lang,
-      title: track.title
-    }));
-  }
-
-  fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
-  console.log(`[FFmpeg] Shared ${allTracks.length} tracks to ${outputFilename}`);
-}
-
-// FFmpeg Job Queue
-const ffmpegJobs = []; // { id, type, filename, status, progress, error, startTime }
-let ffmpegJobCounter = 0;
-
-// Helper: Run FFmpeg Job
-async function runFfmpegJob(jobId, type, params) {
-  const job = ffmpegJobs.find(j => j.id === jobId);
-  if (!job) return;
-
-  job.status = 'running';
-  job.startTime = Date.now();
-  // Emit update via socket if possible (need access to io or admins)
-  // For now we'll rely on polling or implement socket emission later.
-
-  const safeFilename = path.basename(params.filename);
-  const addSuffix = (name, suffix) => {
-    const ext = path.extname(name);
-    return path.join(ROOT_DIR, 'media', path.basename(name, ext) + suffix + ext);
-  };
-
-  const inputPath = path.join(ROOT_DIR, 'media', safeFilename);
-
-  try {
-    if (type === 'remux') {
-      const preset = params.preset;
-      let outputPath;
-
-      if (preset === 'mp4_fast') {
-        outputPath = path.join(ROOT_DIR, 'media', path.basename(safeFilename, path.extname(safeFilename)) + '-clean.mp4');
-      } else if (preset === 'keep_format') {
-        const ext = path.extname(safeFilename);
-        outputPath = path.join(ROOT_DIR, 'media', path.basename(safeFilename, ext) + '-clean' + ext);
-      } else if (preset === 'mkv_copy') {
-        outputPath = path.join(ROOT_DIR, 'media', path.basename(safeFilename, path.extname(safeFilename)) + '-clean.mkv');
-      } else {
-        outputPath = addSuffix(safeFilename, '-fixed');
-      }
-
-      if (!Demuxer || !Muxer) throw new Error('node-av not available');
-
-      // node-av Remux Logic
-      const demuxer = await Demuxer.open(inputPath);
-      const muxer = await Muxer.open(outputPath);
-
-      // Copy streams (Restrict to Video / Audio to prevent container codec crashes like ASS into MP4)
-      const allowedStreams = new Set();
-      const streamMap = {}; // Maps demuxer stream index -> muxer stream index
-      for (const stream of demuxer.streams) {
-        if (stream.codecpar?.type === 'video' || stream.codecpar?.type === 'audio' || stream.codecpar?.codecType === 0 || stream.codecpar?.codecType === 1) {
-          const muxerStreamIdx = muxer.addStream(stream);
-          allowedStreams.add(stream.index);
-          streamMap[stream.index] = muxerStreamIdx;
-        }
-      }
-
-      // Manual packet loop for progress tracking
-      const duration = demuxer.duration > 0 ? demuxer.duration : (await getVideoDuration(inputPath)) || 1;
-      let lastRemuxUpdate = Date.now();
-      const AV_NOPTS_VALUE = -9223372036854775808n;
-
-      for await (const packet of demuxer.packets()) {
-        if (!packet) break;
-        if (!allowedStreams.has(packet.streamIndex)) continue; // Drop unwanted subtitle packets natively
-
-        // Best-effort timestamp sync to mitigate some Matroska warnings
-        if (packet.pts === AV_NOPTS_VALUE && packet.dts !== AV_NOPTS_VALUE) packet.pts = packet.dts;
-        if (packet.dts === AV_NOPTS_VALUE && packet.pts !== AV_NOPTS_VALUE) packet.dts = packet.pts;
-
-        // Map original packet stream index to the new Muxer stream index layout
-        const targetStreamIdx = streamMap[packet.streamIndex];
-        await muxer.writePacket(packet, targetStreamIdx);
-
-        if (Date.now() - lastRemuxUpdate > 4000) {
-          const tb = demuxer.streams[packet.streamIndex]?.timeBase;
-          if (tb && typeof packet.pts === 'bigint' && packet.pts !== AV_NOPTS_VALUE) {
-            const currentSeconds = Number(packet.pts) * (tb.num / tb.den);
-            job.progress = Math.min(Math.max(Math.round((currentSeconds / duration) * 100), 0), 99);
-            lastRemuxUpdate = Date.now();
-          }
-        }
-      }
-
-      await muxer.close(); // Important to finalize file
-      if (demuxer && demuxer.close) await demuxer.close(); // Fix massive memory leak
-
-      job.status = 'completed';
-      job.progress = 100;
-      job.endTime = Date.now();
-      job.duration = (job.endTime - job.startTime) / 1000;
-
-      // Auto-extract tracks from original and share to remuxed output
-      try {
-        await extractAndShareTracks(inputPath, safeFilename, outputPath, true);
-      } catch (e) {
-        console.warn('[FFmpeg] Post-remux track extraction failed:', e.message);
-      }
-
-    } else if (type === 'reencode') {
-      const { resolution, quality, encoder: encoderName } = params.options;
-      const outputPath = addSuffix(safeFilename, `-${encoderName}-${resolution}-${quality}`);
-
-      if (!Demuxer || !Muxer || !Decoder || !Encoder) throw new Error('node-av not fully loaded');
-
-      const demuxer = await Demuxer.open(inputPath);
-      const videoStream = demuxer.streams.find(s => s.codecpar.type === 'video' || s.codecpar.codecType === 0) || demuxer.video[0];
-      if (!videoStream) throw new Error('No video stream found');
-
-      const muxer = await Muxer.open(outputPath);
-
-      // Setup Hardware (if requested and available)
-      let hw = null;
-      if (encoderName !== 'libx264' && encoderName !== 'cpu' && HardwareContext) {
-        try { hw = HardwareContext.auto(); } catch (e) { console.warn('HW Init failed', e); }
-      }
-
-      // Decoder
-      // Note: For actual V1 implementation, we try catch this.
-      // If generic decoder fails, we might need specific codec ID usage.
-      // High-level Decoder.create(stream) should handle it.
-      const decoder = await Decoder.create(videoStream, { hardware: hw });
-
-      // Encoder Settings
-      // Simple bitrate mapping
-      let bitrate = 4000000; // Medium default
-      if (quality === 'high') bitrate = 8000000;
-      if (quality === 'low') bitrate = 1500000;
-
-      // Validate Encoder Name (must be valid ffmpeg codec name)
-      const safeEncoder = (encoderName === 'auto' || encoderName === 'cpu') ? 'libx264' : encoderName;
-
-      // Resolution change logic would go here (requires Filter/FilterGraph)
-      // For now we SKIP resolution scaling and stick to original if node-av basic Encoder doesn't do scale.
-      // (Encoder usually takes raw frames, resizing needs sws_scale or avfilter)
-      // We will just prioritize encoding loop for V1.
-
-      const encoder = await Encoder.create(safeEncoder, {
-        decoder, // Inherit settings (width, height, pixel format, timebase)
-        bitRate: bitrate,
-        timeBase: videoStream.timeBase
-      });
-
-      // Add stream to muxer
-      const outStreamIdx = muxer.addStream(encoder);
-
-      // Pipeline: Input -> Decoder -> Encoder -> Output
-      const inputPackets = demuxer.packets(videoStream.index);
-      const decodedFrames = decoder.frames(inputPackets);
-      const encodedPackets = encoder.packets(decodedFrames);
-
-      const duration = demuxer.duration > 0 ? demuxer.duration : (await getVideoDuration(inputPath)) || 1;
-      let lastReencodeUpdate = Date.now();
-      const AV_NOPTS_VALUE = -9223372036854775808n;
-
-      for await (const packet of encodedPackets) {
-        if (!packet) {
-          await muxer.writePacket(null, outStreamIdx); break;
-        }
-
-        // Apply fallback DTS if available inside encoded packets (though node-av encoder probably sets it)
-        if (packet.pts === AV_NOPTS_VALUE && packet.dts !== AV_NOPTS_VALUE) packet.pts = packet.dts;
-        if (packet.dts === AV_NOPTS_VALUE && packet.pts !== AV_NOPTS_VALUE) packet.dts = packet.pts;
-
-        await muxer.writePacket(packet, outStreamIdx);
-
-        if (Date.now() - lastReencodeUpdate > 4000) {
-          const tb = videoStream.timeBase;
-          if (tb && typeof packet.pts === 'bigint' && packet.pts !== AV_NOPTS_VALUE) {
-            const currentSeconds = Number(packet.pts) * (tb.num / tb.den);
-            job.progress = Math.min(Math.max(Math.round((currentSeconds / duration) * 100), 0), 99);
-            lastReencodeUpdate = Date.now();
-          }
-        }
-      }
-
-      await muxer.close();
-      if (demuxer && demuxer.close) await demuxer.close(); // Fix massive memory leak
-
-      job.status = 'completed';
-      job.progress = 100;
-      job.endTime = Date.now();
-      job.duration = (job.endTime - job.startTime) / 1000;
-
-      // Auto-extract tracks from original and share to re-encoded output
-      try {
-        await extractAndShareTracks(inputPath, safeFilename, outputPath, true);
-      } catch (e) {
-        console.warn('[FFmpeg] Post-reencode track extraction failed:', e.message);
-      }
-
-    } else if (type === 'extract') {
-      const { trackType } = params.options; // 'audio' or 'subtitle'
-      const targetFormat = params.preset; // 'aac', 'mp3', 'srt', 'webvtt', 'ass'
-
-      if (!Demuxer || !Muxer) throw new Error('node-av not fully loaded');
-
-      const demuxer = await Demuxer.open(inputPath);
-
-      // Find best stream for the type
-      // Note: node-av high level accessors: .video, .audio, .subtitles
-      // Debug streams
-      console.log(`[FFmpeg] Inspecting streams for ${safeFilename}:`);
-      demuxer.streams.forEach((s, i) => {
-        console.log(`  Stream ${i}: type=${s.codecpar?.type}, codecType=${s.codecpar?.codecType}, codec=${s.codecpar?.codecName}`);
-      });
-
-      let matchingStreams = [];
-      if (trackType === 'audio') {
-        matchingStreams = demuxer.streams.filter(s => s.codecpar?.type === 'audio' || s.codecpar?.codecType === 1);
-      } else {
-        matchingStreams = demuxer.streams.filter(s => s.codecpar?.type === 'subtitle' || s.codecpar?.codecType === 3);
-      }
-
-      if (matchingStreams.length === 0) throw new Error(`No ${trackType} streams found`);
-
-      console.log(`[FFmpeg] Found ${matchingStreams.length} ${trackType} streams to extract.`);
-
-      // Parse original filename to remove extension
-      const originalExt = path.extname(safeFilename);
-      const baseName = path.basename(safeFilename, originalExt);
-
-      // Fix extension for webvtt (default for all text subs except ASS)
-      let ext = targetFormat;
-      if (trackType === 'subtitle') {
-        if (targetFormat === 'ass') {
-          ext = 'ass';
-        } else {
-          ext = 'vtt';
-        }
-      } else {
-        // Audio
-        if (ext === 'webvtt') ext = 'vtt'; // Just in case
-        if (ext === 'aac') ext = 'm4a'; // AAC in MP4 container for seekable browser playback
-        // mp3 stays .mp3 — Xing header handles seeking natively
-        // flac stays .flac — built-in SEEKTABLE handles seeking
-      }
-
-      // Loop through all matching streams
-      for (let i = 0; i < matchingStreams.length; i++) {
-        const stream = matchingStreams[i];
-        // node-av metadata is a Dictionary object with getAll() method, not a plain object
-        const meta = stream.metadata?.getAll?.() || {};
-        const lang = meta.language || 'und';
-        const title = meta.title || meta.handler_name || (trackType === 'audio' ? `Audio Track ${stream.index}` : `Subtitle Track ${stream.index}`);
-        const safeTitle = title.replace(/[^a-zA-Z0-9_\-\.]/g, '_').substring(0, 50);
-
-        // Unique filename per track including stream index and title
-        const outputFilename = `${baseName}_track${stream.index}_${lang}_${safeTitle}.${ext}`;
-        const outputUrl = path.join(TRACKS_DIR, outputFilename);
-
-        console.log(`[FFmpeg] Extracting stream ${stream.index} (${lang}) to: ${outputUrl}`);
-
-        const args = [
-          '-i', inputPath,
-          '-map', `0:${stream.index}`,
-          '-y' // Overwrite
-        ];
-
-        // Codec Selection
-        if (trackType === 'audio') {
-          if (targetFormat === 'mp3') {
-            // Raw MP3 — Xing header (written by libmp3lame VBR) handles browser seeking
-            args.push('-c:a', 'libmp3lame', '-q:a', '2');
-          } else if (targetFormat === 'aac') {
-            // Output as M4A (AAC in MP4 container) for proper browser seeking
-            args.push('-f', 'mp4', '-movflags', '+faststart');
-            if (stream.codec_name === 'aac') {
-              args.push('-c:a', 'copy');
-            } else {
-              args.push('-c:a', 'aac', '-b:a', '192k');
-            }
-          } else if (targetFormat === 'flac') {
-            // FLAC — lossless, built-in SEEKTABLE, no container tricks needed
-            args.push('-c:a', 'flac');
-          } else {
-            args.push('-c:a', 'copy');
-          }
-        } else {
-          // Subtitles
-          if (ext === 'ass') {
-            args.push('-c:s', 'ass');
-          } else {
-            // Force WebVTT for everything else (SRT, etc.)
-            args.push('-c:s', 'webvtt');
-          }
-        }
-
-        args.push(outputUrl);
-
-        const totalDuration = await getVideoDuration(inputPath) || 1;
-        let lastExtractUpdate = Date.now();
-
-        await new Promise((resolve, reject) => {
-          const proc = spawn(getFFmpegBin(), args);
-
-          proc.stderr.on('data', (data) => {
-            if (Date.now() - lastExtractUpdate < 3000) return;
-
-            const text = data.toString();
-            const timeMatch = text.match(/time=(\d{2}):(\d{2}):(\d{2})\.\d{2}/);
-            if (timeMatch && totalDuration > 0) {
-              const hours = parseInt(timeMatch[1], 10);
-              const minutes = parseInt(timeMatch[2], 10);
-              const seconds = parseInt(timeMatch[3], 10);
-              const elapsed = (hours * 3600) + (minutes * 60) + seconds;
-
-              const baseProgress = (i / matchingStreams.length) * 100;
-              const chunkProgress = (elapsed / totalDuration) * (100 / matchingStreams.length);
-              job.progress = Math.min(Math.round(baseProgress + chunkProgress), 100);
-              lastExtractUpdate = Date.now();
-            }
-          });
-
-          proc.on('close', async (code) => {
-            if (code === 0) {
-              // Post-process VTT to clean artifacts
-              if (targetFormat === 'vtt' || ext === 'vtt') {
-                await cleanVttFile(outputUrl);
-              }
-              job.progress = Math.round(((i + 1) / matchingStreams.length) * 100);
-              resolve();
-            } else reject(new Error(`FFmpeg exited with code ${code}`));
-          });
-          proc.on('error', (err) => reject(err));
-        });
-
-        // Update Manifest for THIS track
-        try {
-          const manifestFilename = safeFilename + '.json';
-          const manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestFilename);
-          let manifest = { externalTracks: [] };
-
-          if (fs.existsSync(manifestPath)) {
-            try {
-              manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-            } catch (e) { /* ignore corrupt */ }
-          }
-
-          const existingIdx = manifest.externalTracks.findIndex(t => t.path === outputFilename);
-          const newTrack = {
-            type: trackType,
-            lang: lang,
-            title: title,
-            path: outputFilename,
-            // URL points to the new static route /tracks
-            url: `/tracks/${outputFilename}`
-          };
-
-          if (existingIdx >= 0) {
-            manifest.externalTracks[existingIdx] = newTrack;
-          } else {
-            manifest.externalTracks.push(newTrack);
-          }
-
-          fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-        } catch (e) {
-          console.error('Failed to update manifest:', e);
-        }
-
-        // Update job progress incrementally
-        job.progress = Math.round(((i + 1) / matchingStreams.length) * 100);
-      }
-
-      job.status = 'completed';
-      job.progress = 100;
-      job.endTime = Date.now();
-      job.duration = (job.endTime - job.startTime) / 1000;
-
-      if (demuxer && demuxer.close) await demuxer.close(); // Fix massive memory leak
-
-    } else if (type === 'track-tool') {
-      const { action, sourceVideo, targetVideo, trackIndex, orphanFile } = params.options;
-
-      // Ensure manifest manipulation functions are accessible globally in server.js
-      if (action === 'rebind' || action === 'share') {
-        const src = readSourceTrackGlobal(sourceVideo, trackIndex);
-        if (src.error) throw new Error(src.error);
-
-        const tgt = prepareTargetManifestGlobal(targetVideo);
-
-        if (action === 'rebind') {
-          let absoluteOldPath = path.join(TRACKS_DIR, src.track.path);
-          if (!fs.existsSync(absoluteOldPath) && path.isAbsolute(src.track.path) && fs.existsSync(src.track.path)) {
-            absoluteOldPath = src.track.path;
-          }
-
-          const ext = path.extname(absoluteOldPath);
-          const lang = src.track.lang || 'und';
-          const title = (src.track.title || 'Track').replace(/[^a-zA-Z0-9]/g, '');
-          const newFileName = `${tgt.safeBaseName}_track${tgt.nextIndex}_${lang}_${title}${ext}`;
-          const absoluteNewPath = path.join(TRACKS_DIR, newFileName);
-
-          fs.renameSync(absoluteOldPath, absoluteNewPath);
-
-          tgt.manifest.externalTracks.push(buildTrackEntryGlobal(newFileName, {
-            type: src.track.type || 'subtitle', lang, title: src.track.title || 'Track'
-          }));
-          fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
-
-          src.manifest.externalTracks.splice(src.arrayIndex, 1);
-          fs.writeFileSync(src.manifestPath, JSON.stringify(src.manifest, null, 2));
-          console.log(`[Subtitle] Rebound ${newFileName} from ${sourceVideo} to ${targetVideo}`);
-
-        } else if (action === 'share') {
-          if (tgt.manifest.externalTracks.some(t => t.path === src.track.path)) {
-            throw new Error('Subtitle is already linked to target');
-          }
-          tgt.manifest.externalTracks.push(buildTrackEntryGlobal(src.track.path, {
-            type: src.track.type || 'subtitle', lang: src.track.lang || 'und', title: src.track.title || 'Track'
-          }));
-          fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
-          console.log(`[Subtitle] Shared ${src.track.path} from ${sourceVideo} to ${targetVideo}`);
-        }
-
-        job.status = 'completed';
-        job.progress = 100;
-
-      } else if (action === 'bind-orphan') {
-        const sourcePath = path.join(TRACKS_DIR, orphanFile);
-        if (!fs.existsSync(sourcePath)) throw new Error('Orphan file not found');
-
-        const tgt = prepareTargetManifestGlobal(targetVideo);
-        let finalSourcePath = sourcePath;
-        let ext = path.extname(sourcePath).toLowerCase();
-        let wasConverted = false;
-
-        if (ext === '.srt') {
-          if (!ffmpegPath) throw new Error('FFmpeg not available for conversion');
-          const tempVttName = `${path.basename(orphanFile, '.srt')}_converted.vtt`;
-          const tempVttPath = path.join(TRACKS_DIR, tempVttName);
-          const bin = ffmpegPath();
-
-          await new Promise((resolve, reject) => {
-            const proc = spawn(bin, ['-y', '-i', sourcePath, tempVttPath]);
-            proc.on('close', code => code === 0 ? resolve() : reject(new Error(`Exit code ${code}`)));
-            proc.on('error', err => reject(err));
-          });
-
-          finalSourcePath = tempVttPath;
-          ext = '.vtt';
-          wasConverted = true;
-          console.log(`[Subtitle] Converted SRT to VTT: ${tempVttName}`);
-        }
-
-        const newFileName = `${tgt.safeBaseName}_track${tgt.nextIndex}_und_Orphan${ext}`;
-        const finalPath = path.join(TRACKS_DIR, newFileName);
-        fs.renameSync(finalSourcePath, finalPath);
-
-        if (wasConverted && fs.existsSync(sourcePath)) {
-          try { fs.unlinkSync(sourcePath); } catch (e) { }
-        }
-
-        tgt.manifest.externalTracks.push(buildTrackEntryGlobal(newFileName, {
-          type: 'subtitle', lang: 'und', title: 'Orphan'
-        }));
-        fs.writeFileSync(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
-
-        job.status = 'completed';
-        job.progress = 100;
-      }
-
-      job.endTime = Date.now();
-      job.duration = (job.endTime - job.startTime) / 1000;
-
-    } else {
-      job.status = 'failed';
-      job.error = 'Job type not implemented yet';
-    }
-  } catch (err) {
-    console.error('Job failed:', err);
-    job.status = 'failed';
-    job.error = err.message;
-  }
-}
-
-app.post('/api/ffmpeg/run-preset', express.json(), verifyFfmpegAuth, (req, res) => {
-  const { type, filename, preset, options } = req.body;
-  if (!filename) return res.status(400).json({ error: 'Filename required' });
-
-  ffmpegJobCounter++;
-  const job = {
-    id: ffmpegJobCounter,
-    type,
-    filename,
-    status: 'pending',
-    progress: 0,
-    startTime: Date.now(),
-    preset
-  };
-
-  ffmpegJobs.push(job);
-
-  // Start async
-  runFfmpegJob(job.id, type, { filename, preset, options });
-
-  res.json({ success: true, jobId: job.id });
-});
-
-app.get('/api/ffmpeg/jobs', (req, res) => {
-  // Return unfinished jobs or last 10
-  const active = ffmpegJobs.filter(j => ['pending', 'running'].includes(j.status));
-  const history = ffmpegJobs.filter(j => ['completed', 'failed', 'cancelled'].includes(j.status))
-    .sort((a, b) => b.startTime - a.startTime)
-    .slice(0, 10);
-  res.json({ jobs: [...active, ...history] });
-});
-
-app.post('/api/ffmpeg/cancel', express.json(), verifyFfmpegAuth, (req, res) => {
-  const { jobId } = req.body;
-  const job = ffmpegJobs.find(j => j.id === parseInt(jobId));
-  if (job && job.status === 'running') {
-    job.status = 'cancelled'; // Logic to actually kill process needed later
-    res.json({ success: true });
-  } else {
-    res.status(404).json({ error: 'Job not found or not running' });
-  }
-});
-class Room {
-  constructor(code, name, isPrivate, adminFingerprint) {
-    this.code = code;
-    this.name = name;
-    this.isPrivate = isPrivate;
-    this.createdAt = new Date().toISOString();
-    this.adminFingerprint = adminFingerprint;
-    this.adminSocketId = null;
-    this.clients = new Map(); // socketId -> { fingerprint, name, connectedAt }
-
-    // Room-specific playlist and video state
-    this.playlist = {
-      videos: [],
-      currentIndex: -1,
-      mainVideoIndex: -1,
-      mainVideoStartTime: 0,
-      preloadMainVideo: false
-    };
-
-    this.videoState = {
-      isPlaying: true,
-      currentTime: 0,
-      lastUpdate: Date.now(),
-      audioTrack: 0,
-      subtitleTrack: -1,
-      playbackRate: 1.0
-    };
-
-    // BSL-S² state for this room
-    this.clientBslStatus = new Map();
-    this.clientDriftValues = new Map();
-  }
-
-  addClient(socketId, fingerprint, name) {
-    this.clients.set(socketId, {
-      fingerprint,
-      name: name || `Guest-${socketId.slice(-4)}`,
-      connectedAt: new Date().toISOString()
-    });
-  }
-
-  removeClient(socketId) {
-    this.clients.delete(socketId);
-    this.clientBslStatus.delete(socketId);
-  }
-
-  getClientCount() {
-    return this.clients.size;
-  }
-
-  isAdmin(fingerprint) {
-    // First check RAM
-    if (this.adminFingerprint === fingerprint) {
-      return true;
-    }
-    // Fallback: check persisted fingerprint from disk
-    if (roomLogger) {
-      const persistedFp = roomLogger.getAdminFingerprint(this.code);
-      if (persistedFp && persistedFp === fingerprint) {
-        // Update RAM to match disk for future checks
-        this.adminFingerprint = persistedFp;
-        console.log(`Admin fingerprint restored from disk for room ${this.code}`);
-        return true;
-      }
-    }
-    console.log(`Admin check failed for room ${this.code}: provided='${fingerprint.substring(0, 8)}...', expected='${this.adminFingerprint?.substring(0, 8) || 'null'}...'`);
-    return false;
-  }
-
-  getCurrentTrackSelections() {
-    return _getTrackSelections(this.playlist);
-  }
-}
-
-// ==================== Rooms Manager ====================
-const rooms = new Map(); // roomCode -> Room
-
-function generateRoomCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let code = '';
-  for (let i = 0; i < 6; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  // Ensure uniqueness
-  if (rooms.has(code)) {
-    return generateRoomCode();
-  }
-  return code;
-}
-
-function createRoom(name, isPrivate, adminFingerprint) {
-  const code = generateRoomCode();
-  const room = new Room(code, name, isPrivate, adminFingerprint);
-  rooms.set(code, room);
-
-  if (roomLogger) {
-    roomLogger.logGeneral('room_created', { roomCode: code, roomName: name, isPrivate });
-    roomLogger.initRoomLog(code, name, room.createdAt);
-    // Persist admin fingerprint to disk for reliable verification
-    roomLogger.saveAdminFingerprint(code, adminFingerprint);
-  }
-
-  return room;
-}
-
-function getRoom(code) {
-  return rooms.get(code?.toUpperCase());
-}
-
-function deleteRoom(code) {
-  const room = rooms.get(code);
-  if (room) {
-    if (roomLogger) {
-      roomLogger.logGeneral('room_deleted', { roomCode: code, roomName: room.name });
-      roomLogger.deleteRoomLog(code);
-      // Also delete persisted fingerprint
-      roomLogger.deleteAdminFingerprint(code);
-    }
-    rooms.delete(code);
-    return true;
-  }
-  return false;
-}
-
-function getPublicRooms() {
-  const publicRooms = [];
-  rooms.forEach((room, code) => {
-    if (!room.isPrivate) {
-      publicRooms.push({
-        code: room.code,
-        name: room.name,
-        viewers: room.getClientCount(),
-        createdAt: room.createdAt
-      });
-    }
-  });
-  return publicRooms;
-}
-
-// Track which room each socket is in (for server mode)
-const socketRoomMap = new Map(); // socketId -> roomCode
+// Register FFmpeg HTTP routes from module
+registerFFmpegRoutes(app);
+
+// Admin Fingerprint Lock (uses memory module)
+let registeredAdminFingerprint = ADMIN_FINGERPRINT_LOCK ? getAdminFingerprint() : null;
 
 // ==================== Legacy Single-Room State (Non-Server Mode) ====================
-// BSL-S² (Both Side Local Sync Stream) state tracking
-// Maps socketId -> { folderSelected: bool, files: [{name, size}], matchedVideos: {playlistIndex: localFileName} }
-const clientBslStatus = new Map();
-// Track admin socket for BSL-S² status updates
+let PLAYLIST = {
+  videos: [],
+  currentIndex: -1,
+  mainVideoIndex: -1,
+  mainVideoStartTime: 0,
+  preloadMainVideo: false
+};
+
+let videoState = {
+  isPlaying: true,
+  currentTime: 0,
+  lastUpdate: Date.now(),
+  audioTrack: 0,
+  subtitleTrack: -1,
+  playbackRate: 1.0
+};
+
 let adminSocketId = null;
-// Track verified admin sockets (for fingerprint lock security)
 const verifiedAdminSockets = new Set();
-// Track connected clients with their fingerprints
-const connectedClients = new Map(); // socketId -> { fingerprint, connectedAt }
-// BSL-S² drift values per client per video (fingerprint -> { playlistIndex: driftSeconds })
+const connectedClients = new Map();
+const clientBslStatus = new Map();
 const clientDriftValues = new Map();
+let clientDisplayNames = getClientNames();
+let persistentBslMatches = getBslMatches();
 
-// BSL-S² Persistent matches file (legacy, now in memory.json)
-const BSL_MATCHES_FILE = path.join(MEMORY_DIR, 'bsl_matches.json');
+// Legacy state bundle for resolveContext
+const legacyState = {
+  get PLAYLIST() { return PLAYLIST; },
+  get videoState() { return videoState; },
+  get clientBslStatus() { return clientBslStatus; },
+  get clientDriftValues() { return clientDriftValues; },
+  get adminSocketId() { return adminSocketId; },
+  connectedClients,
+  verifiedAdminSockets
+};
 
-// ==================== Unified Memory Storage ====================
-// Admin fingerprint is encrypted, clientNames and bslMatches are plain JSON
-const MEMORY_FILE = path.join(MEMORY_DIR, 'memory.json');
-const KEY_FILE = path.join(MEMORY_DIR, '.key');
-
-// Get or generate encryption key (32 bytes for AES-256)
-function getEncryptionKey() {
-  // First, check environment variable
-  if (process.env.SYNC_PLAYER_KEY) {
-    // Hash the env key to ensure it's exactly 32 bytes
-    return crypto.createHash('sha256').update(process.env.SYNC_PLAYER_KEY).digest();
-  }
-
-  // Check for existing key file
-  if (fs.existsSync(KEY_FILE)) {
-    const keyHex = fs.readFileSync(KEY_FILE, 'utf8').trim();
-    return Buffer.from(keyHex, 'hex');
-  }
-
-  // Generate new key and save it
-  const newKey = crypto.randomBytes(32);
-  fs.writeFileSync(KEY_FILE, newKey.toString('hex'), { mode: 0o600 });
-  console.log(`${colors.green}Generated new encryption key for memory storage${colors.reset}`);
-  return newKey;
-}
-
-const ENCRYPTION_KEY = getEncryptionKey();
-
-// Encrypt data using AES-256-GCM
-function encryptData(plaintext) {
-  const iv = crypto.randomBytes(12); // 96-bit IV for GCM
-  const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
-
-  let encrypted = cipher.update(plaintext, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
-
-  const authTag = cipher.getAuthTag();
-
-  // Format: iv:authTag:ciphertext
-  return iv.toString('hex') + ':' + authTag.toString('hex') + ':' + encrypted;
-}
-
-// Decrypt data using AES-256-GCM
-function decryptData(encryptedData) {
-  const parts = encryptedData.split(':');
-  if (parts.length !== 3) {
-    throw new Error('Invalid encrypted data format');
-  }
-
-  const iv = Buffer.from(parts[0], 'hex');
-  const authTag = Buffer.from(parts[1], 'hex');
-  const ciphertext = parts[2];
-
-  const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
-  decipher.setAuthTag(authTag);
-
-  let decrypted = decipher.update(ciphertext, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
-
-  return decrypted;
-}
-
-// Check if data is encrypted (starts with hex IV pattern)
-function isEncrypted(data) {
-  // Encrypted format: 24 hex chars (IV) + ':' + 32 hex chars (authTag) + ':' + ciphertext
-  return /^[a-f0-9]{24}:[a-f0-9]{32}:/.test(data);
-}
-
-// Load unified memory
-// Format: { encrypted: "iv:authTag:ciphertext", clientNames: {}, bslMatches: {} }
-function loadMemory() {
-  try {
-    if (fs.existsSync(MEMORY_FILE)) {
-      const rawData = fs.readFileSync(MEMORY_FILE, 'utf8');
-
-      // Check if old fully-encrypted format (migration)
-      if (isEncrypted(rawData)) {
-        console.log(`${colors.yellow}Migrating from old encrypted format...${colors.reset}`);
-        const decrypted = decryptData(rawData);
-        const oldData = JSON.parse(decrypted);
-        // Migrate to new format
-        const newFormat = {
-          encrypted: oldData.adminFingerprint ? encryptData(oldData.adminFingerprint) : null,
-          clientNames: oldData.clientNames || {},
-          bslMatches: oldData.bslMatches || {}
-        };
-        saveMemory(newFormat);
-        console.log(`${colors.green}Migration complete${colors.reset}`);
-        return newFormat;
-      }
-
-      // New JSON format
-      const data = JSON.parse(rawData);
-      return {
-        encrypted: data.encrypted || null,
-        clientNames: data.clientNames || {},
-        bslMatches: data.bslMatches || {}
-      };
-    }
-
-    // Check for legacy admin fingerprint file and migrate
-    let encryptedFp = null;
-    if (fs.existsSync(path.join(ROOT_DIR, 'admin_fingerprint.txt'))) {
-      const adminFp = fs.readFileSync(path.join(ROOT_DIR, 'admin_fingerprint.txt'), 'utf8').trim();
-      encryptedFp = encryptData(adminFp);
-      console.log(`${colors.green}Migrated legacy admin fingerprint${colors.reset}`);
-    }
-
-    return { encrypted: encryptedFp, clientNames: {}, bslMatches: {} };
-  } catch (error) {
-    console.error('Error loading memory:', error);
-  }
-  return { encrypted: null, clientNames: {}, bslMatches: {} };
-}
-
-// Save unified memory - encrypted field for admin fp, plain for rest
-function saveMemory(mem) {
-  try {
-    const toSave = {
-      encrypted: mem.encrypted || null,
-      clientNames: mem.clientNames || {},
-      bslMatches: mem.bslMatches || {}
-    };
-    fs.writeFileSync(MEMORY_FILE, JSON.stringify(toSave, null, 2));
-  } catch (error) {
-    console.error('Error saving memory:', error);
-  }
-}
-
-// Load memory at startup
-let memory = loadMemory();
-
-// Admin fingerprint accessors (encrypted)
-function getAdminFingerprint() {
-  if (!memory.encrypted) return null;
-  try {
-    return decryptData(memory.encrypted);
-  } catch {
-    return null;
-  }
-}
-
-function setAdminFingerprint(fp) {
-  memory.encrypted = encryptData(fp);
-  saveMemory(memory);
-  // Log hashed fingerprint for security (don't expose raw fingerprint)
-  const hashedFp = crypto.createHash('sha256').update(fp).digest('hex').substring(0, 6);
-  console.log(`${colors.green}Admin fingerprint registered: ${hashedFp}...${colors.reset}`);
-}
-
-// Client names accessors (plain, persisted)
-let clientDisplayNames = memory.clientNames || {};
-
-function getClientNames() {
-  return clientDisplayNames;
-}
-
-function setClientName(clientId, name) {
-  clientDisplayNames[clientId] = name;
-  memory.clientNames = clientDisplayNames;
-  saveMemory(memory);
-}
-
-// BSL matches accessors (plain, persisted)
-let persistentBslMatches = memory.bslMatches || {};
-
-function getBslMatches() {
-  return persistentBslMatches;
-}
-
-function setBslMatch(clientId, clientFileName, playlistFileName) {
-  if (!persistentBslMatches[clientId]) persistentBslMatches[clientId] = {};
-  persistentBslMatches[clientId][clientFileName] = playlistFileName;
-  memory.bslMatches = persistentBslMatches;
-  saveMemory(memory);
-}
-
-// Admin Fingerprint Lock Configuration
-const ADMIN_FINGERPRINT_LOCK = config.admin_fingerprint_lock === 'true';
-let registeredAdminFingerprint = ADMIN_FINGERPRINT_LOCK ? getAdminFingerprint() : null;
 
 // Apply helmet security headers with safe configuration
 if (config.use_https === 'true') {
@@ -2139,59 +345,8 @@ if (fs.existsSync(JASSUB_PUBLIC_DIR)) {
   }));
 }
 
-// CSRF Token Management
-const csrfTokens = new Map(); // sessionId -> { token, expires }
-const CSRF_TOKEN_EXPIRY = 24 * 60 * 60 * 1000; // 24 hours
 
-function generateCsrfToken() {
-  return crypto.randomBytes(32).toString('hex');
-}
-
-function getOrCreateCsrfToken(sessionId) {
-  const existing = csrfTokens.get(sessionId);
-  if (existing && existing.expires > Date.now()) {
-    return existing.token;
-  }
-
-  const token = generateCsrfToken();
-  csrfTokens.set(sessionId, { token, expires: Date.now() + CSRF_TOKEN_EXPIRY });
-
-  // Cleanup old tokens periodically
-  if (csrfTokens.size > 1000) {
-    const now = Date.now();
-    for (const [key, val] of csrfTokens) {
-      if (val.expires < now) csrfTokens.delete(key);
-    }
-  }
-
-  return token;
-}
-
-function validateCsrfToken(sessionId, token) {
-  const stored = csrfTokens.get(sessionId);
-  if (!stored || stored.expires < Date.now()) return false;
-  return stored.token === token;
-}
-
-// CSRF validation middleware for state-changing operations
-function csrfProtection(req, res, next) {
-  // Skip for GET, HEAD, OPTIONS (safe methods)
-  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
-    return next();
-  }
-
-  const sessionId = req.cookies.sync_session;
-  const token = req.headers['x-csrf-token'] || req.body?._csrf;
-
-  if (!sessionId || !token || !validateCsrfToken(sessionId, token)) {
-    console.log(`${colors.red}CSRF validation failed${colors.reset}`);
-    return res.status(403).json({ error: 'CSRF token validation failed' });
-  }
-
-  next();
-}
-
-// Static file serving — ONLY expose specific safe directories (never the project root)
+// Static file serving â€” ONLY expose specific safe directories (never the project root)
 app.use('/media', express.static(path.join(ROOT_DIR, 'media')));
 app.use('/tracks', express.static(TRACKS_DIR));
 app.use('/js', express.static(path.join(__dirname, 'js')));
@@ -2199,105 +354,6 @@ app.use('/css', express.static(path.join(__dirname, 'css')));
 app.use('/font', express.static(path.join(__dirname, 'font')));
 app.use('/img', express.static(path.join(__dirname, 'img')));
 
-// API to list available fonts
-// Helper: Extract fonts from video file (if any)
-// Global cache for font hashes
-const fontHashCache = new Map(); // filename -> { mtimeMs, hash }
-
-async function getFontHash(filePath) {
-  try {
-    const stats = await fs.promises.stat(filePath);
-    const filename = path.basename(filePath);
-    const cached = fontHashCache.get(filename);
-
-    if (cached && cached.mtimeMs === stats.mtimeMs) {
-      return cached.hash;
-    }
-
-    const content = await fs.promises.readFile(filePath);
-    const hash = crypto.createHash('sha256').update(content).digest('hex');
-    fontHashCache.set(filename, { mtimeMs: stats.mtimeMs, hash });
-    return hash;
-  } catch (e) {
-    return null;
-  }
-}
-
-// Helper: Extract fonts from video file (if any)
-async function extractFonts(videoFilename) {
-  if (!videoFilename) return;
-
-  const videoPath = path.join(MEDIA_DIR, videoFilename);
-  if (!fs.existsSync(videoPath)) return;
-
-  // Ensure font dir exists
-  const fontDir = path.join(__dirname, 'font');
-  if (!fs.existsSync(fontDir)) fs.mkdirSync(fontDir, { recursive: true });
-
-  let demuxer = null;
-  try {
-    if (Demuxer) {
-      demuxer = await Demuxer.open(videoPath);
-
-      // Get hashes of all existing fonts to check against content
-      const existingFiles = await fs.promises.readdir(fontDir);
-      const existingHashes = new Set();
-
-      for (const file of existingFiles) {
-        if (/\.(ttf|otf|woff|woff2)$/i.test(file)) {
-          const hash = await getFontHash(path.join(fontDir, file));
-          if (hash) existingHashes.add(hash);
-        }
-      }
-
-      for (const stream of demuxer.streams) {
-        // codecpar.codecType: 4=attachment
-        const isAttachment = stream.codecpar?.codecType === 4 || stream.type === 'attachment';
-
-        if (isAttachment) {
-          const metadata = stream.metadata?.getAll?.() || {};
-          const filename = metadata.filename || stream.codecpar?.extradata?.filename;
-
-          if (filename && /\.(ttf|otf)$/i.test(filename)) {
-            // Get attachment content by reading the first packet
-            const packetGen = demuxer.packets(stream.index);
-            const next = await packetGen.next();
-
-            if (!next.done && next.value) {
-              const packet = next.value;
-              if (packet.data) {
-                const fontBuffer = Buffer.from(packet.data);
-                const fontHash = crypto.createHash('sha256').update(fontBuffer).digest('hex');
-
-                if (existingHashes.has(fontHash)) {
-                  console.log(`[FontExtract] Skipping ${filename} - identical font content already exists`);
-                } else {
-                  const safeFontName = path.basename(filename);
-                  const outputPath = path.join(fontDir, safeFontName);
-
-                  console.log(`[FontExtract] Extracting new font content: ${safeFontName}`);
-                  await fs.promises.writeFile(outputPath, fontBuffer);
-
-                  // Update hash cache
-                  existingHashes.add(fontHash);
-                  const stats = await fs.promises.stat(outputPath);
-                  fontHashCache.set(safeFontName, { mtimeMs: stats.mtimeMs, hash: fontHash });
-                }
-              }
-              packet.free();
-            }
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.warn(`[FontExtract] Error processing ${videoFilename}:`, err.message);
-  } finally {
-    if (demuxer && typeof demuxer.close === 'function') {
-      await demuxer.close();
-    }
-  }
-}
 
 
 // API to list available fonts (with optional extraction)
@@ -2325,38 +381,11 @@ app.use('/jassub', express.static(path.join(__dirname, 'node_modules/jassub/dist
 app.use('/rvfc-polyfill', express.static(path.join(__dirname, 'node_modules/rvfc-polyfill')));
 app.use('/abslink', express.static(path.join(__dirname, 'node_modules/abslink')));
 
-const PLAYLIST = {
-  videos: [],
-  currentIndex: -1,
-  mainVideoIndex: -1,
-  mainVideoStartTime: 0,
-  preloadMainVideo: false
-};
-
-let videoState = {
-  isPlaying: true,
-  currentTime: 0,
-  lastUpdate: Date.now(),
-  audioTrack: 0,
-  subtitleTrack: -1,
-  playbackRate: 1.0
-};
-
-// Shared track selection logic (used by both Room class and legacy mode)
-function _getTrackSelections(playlist) {
-  if (playlist.videos.length > 0 && playlist.currentIndex >= 0 && playlist.currentIndex < playlist.videos.length) {
-    const currentVideo = playlist.videos[playlist.currentIndex];
-    return {
-      audioTrack: currentVideo.selectedAudioTrack !== undefined ? currentVideo.selectedAudioTrack : 0,
-      subtitleTrack: currentVideo.selectedSubtitleTrack !== undefined ? currentVideo.selectedSubtitleTrack : -1
-    };
-  }
-  return { audioTrack: 0, subtitleTrack: -1 };
-}
-
+// Legacy track selection wrapper
 function getCurrentTrackSelections() {
   return _getTrackSelections(PLAYLIST);
 }
+
 
 // Get audio/subtitle tracks for a file
 async function getTracksForFile(filename) {
@@ -2432,7 +461,7 @@ async function getTracksForFile(filename) {
           if (isAudio) {
             tracks.audio.push(trackInfo);
           } else if (isSubtitle) {
-            // Internal subtitles disabled — use extracted sidecars instead
+            // Internal subtitles disabled â€” use extracted sidecars instead
             // tracks.subtitles.push(trackInfo);
           }
         }
@@ -2738,8 +767,7 @@ app.get('/api/tracks/:filename', tracksRateLimiter, async (req, res) => {
   }
 });
 
-// Get in-project directory for thumbnails (persists across reboots, auto-cleaned when stale)
-const THUMBNAIL_DIR = path.join(__dirname, 'img', 'thumbnails');
+// Thumbnail directory (imported from config)
 
 // Ensure thumbnail directory exists
 if (!fs.existsSync(THUMBNAIL_DIR)) {
@@ -2751,46 +779,6 @@ if (!fs.existsSync(THUMBNAIL_DIR)) {
 // but we keep /thumbnails explicitly to prevent breaking existing client caches
 app.use('/thumbnails', express.static(THUMBNAIL_DIR));
 
-// Get video duration using node-av
-async function getVideoDuration(videoPath) {
-  let demuxer = null;
-  try {
-    if (Demuxer) {
-      demuxer = await Demuxer.open(videoPath);
-      // demuxer.duration is in seconds (float)
-      return demuxer.duration || 0;
-    } else {
-      // Fallback to ffprobe if node-av failed to load (though unlikely if Demuxer is defined)
-      return new Promise((resolve, reject) => {
-        execFile('ffprobe', [
-          '-v', 'quiet',
-          '-print_format', 'json',
-          '-show_format',
-          videoPath
-        ], (error, stdout) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          try {
-            const data = JSON.parse(stdout);
-            const duration = parseFloat(data.format.duration) || 0;
-            resolve(duration);
-          } catch (e) {
-            reject(e);
-          }
-        });
-      });
-    }
-  } catch (err) {
-    console.error(`Error getting duration for ${videoPath}:`, err.message);
-    return 0;
-  } finally {
-    if (demuxer) {
-      await demuxer.close();
-    }
-  }
-}
 
 // Generate thumbnail from video (720p default, random frame from first third)
 app.get('/api/thumbnail/:filename', thumbnailRateLimiter, async (req, res) => {
@@ -2877,7 +865,7 @@ io.on('connection', (socket) => {
   console.log(`${colors.cyan}A user connected: ${socket.id}${colors.reset}`);
   socket.joinTime = Date.now(); // Track connection time for grace period
 
-  // Periodic ban recheck — catches IPs banned mid-session (e.g. spoofed credentials)
+  // Periodic ban recheck â€” catches IPs banned mid-session (e.g. spoofed credentials)
   const banCheckInterval = setInterval(() => {
     if (isIpBanned(socket.handshake.address)) {
       // Silently convert to black hole: remove all listeners, swallow future events
@@ -3199,46 +1187,41 @@ io.on('connection', (socket) => {
       }
     });
 
-    // Chat message handler (server mode)
+    // Unified chat message handler (works in both server and legacy mode)
     socket.on('chat-message', (data) => {
       if (!CHAT_ENABLED) return;
 
-      const roomCode = socketRoomMap.get(socket.id);
-      if (roomCode) {
-        const room = getRoom(roomCode);
-        if (room) {
-          const message = data.message?.trim() || '';
+      const ctx = resolveContext(socket.id, legacyState, io);
+      if (!ctx) return;
 
-          // Handle /rename command
-          if (message.toLowerCase().startsWith('/rename ')) {
-            const newName = message.substring(8).trim().substring(0, 32); // Max 32 chars
-            if (newName) {
-              const clientInfo = connectedClients.get(socket.id);
-              if (clientInfo && clientInfo.fingerprint) {
-                const oldName = clientDisplayNames[clientInfo.fingerprint] || data.sender || 'Guest';
-                setClientName(clientInfo.fingerprint, newName);
-                // Notify the client of their new name so they update locally
-                socket.emit('name-updated', { newName });
-                // Notify room of name change
-                io.to(roomCode).emit('chat-message', {
-                  sender: 'System',
-                  message: `${escapeHTML(oldName)} is now known as ${escapeHTML(newName)}`,
-                  timestamp: Date.now(),
-                  isSystem: true
-                });
-              }
-            }
-            return; // Don't broadcast the command itself
+      const message = data.message?.trim() || '';
+
+      // Handle /rename command
+      if (message.toLowerCase().startsWith('/rename ')) {
+        const newName = message.substring(8).trim().substring(0, 32);
+        if (newName) {
+          const clientInfo = connectedClients.get(socket.id);
+          if (clientInfo && clientInfo.fingerprint) {
+            const oldName = clientDisplayNames[clientInfo.fingerprint] || data.sender || 'Guest';
+            setClientName(clientInfo.fingerprint, newName);
+            socket.emit('name-updated', { newName });
+            ctx.emit('chat-message', {
+              sender: 'System',
+              message: `${escapeHTML(oldName)} is now known as ${escapeHTML(newName)}`,
+              timestamp: Date.now(),
+              isSystem: true
+            });
           }
-
-          // Broadcast message to all clients in the room (properly escaped)
-          io.to(roomCode).emit('chat-message', {
-            sender: escapeHTML(data.sender || 'Guest'),
-            message: escapeHTML(message.substring(0, 500)),
-            timestamp: Date.now()
-          });
         }
+        return;
       }
+
+      // Broadcast message (properly escaped)
+      ctx.emit('chat-message', {
+        sender: escapeHTML(data.sender || 'Guest'),
+        message: escapeHTML(message.substring(0, 500)),
+        timestamp: Date.now()
+      });
     });
 
     // Server mode: don't run legacy initialization, but continue to register event handlers below
@@ -3327,43 +1310,6 @@ io.on('connection', (socket) => {
     socket.emit('sync', videoState);
   });
 
-  // Chat message handler (legacy mode - only if not in server mode room)
-  if (!SERVER_MODE) {
-    socket.on('chat-message', (data) => {
-      if (!CHAT_ENABLED) return;
-
-      const message = data.message?.trim() || '';
-
-      // Handle /rename command
-      if (message.toLowerCase().startsWith('/rename ')) {
-        const newName = message.substring(8).trim().substring(0, 32); // Max 32 chars
-        if (newName) {
-          const clientInfo = connectedClients.get(socket.id);
-          if (clientInfo && clientInfo.fingerprint) {
-            const oldName = clientDisplayNames[clientInfo.fingerprint] || data.sender || 'Guest';
-            setClientName(clientInfo.fingerprint, newName);
-            // Notify the client of their new name so they update locally
-            socket.emit('name-updated', { newName });
-            // Notify all of name change
-            io.emit('chat-message', {
-              sender: 'System',
-              message: `${escapeHTML(oldName)} is now known as ${escapeHTML(newName)}`,
-              timestamp: Date.now(),
-              isSystem: true
-            });
-          }
-        }
-        return; // Don't broadcast the command itself
-      }
-
-      // Broadcast message to all clients (properly escaped)
-      io.emit('chat-message', {
-        sender: escapeHTML(data.sender || 'Guest'),
-        message: escapeHTML(message.substring(0, 500)),
-        timestamp: Date.now()
-      });
-    });
-  }
 
   // Listen for control events from clients
   socket.on('control', (data) => {
@@ -3926,7 +1872,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // BSL-S² (Both Side Local Sync Stream) handlers
+  // BSL-SÂ² (Both Side Local Sync Stream) handlers
 
   // Helper: Check if socket is a verified admin
   function isVerifiedAdmin(socketId) {
@@ -3984,11 +1930,11 @@ io.on('connection', (socket) => {
     }
 
     const hashedFp = fingerprint ? crypto.createHash('sha256').update(fingerprint).digest('hex').substring(0, 6) : null;
-    console.log(`${colors.green}Admin registered for BSL-S²: ${socket.id}${hashedFp ? ` (fingerprint: ${hashedFp}...)` : ''}${colors.reset}`);
+    console.log(`${colors.green}Admin registered for BSL-SÂ²: ${socket.id}${hashedFp ? ` (fingerprint: ${hashedFp}...)` : ''}${colors.reset}`);
     socket.emit('admin-auth-result', { success: true });
   });
 
-  // Admin requests BSL-S² check on all clients
+  // Admin requests BSL-SÂ² check on all clients
   socket.on('bsl-check-request', () => {
     let targetRoomCode, targetPlaylist, targetClientBslStatus, targetAdminSocketId;
 
@@ -4008,7 +1954,7 @@ io.on('connection', (socket) => {
       targetAdminSocketId = adminSocketId;
     }
 
-    console.log(`${colors.cyan}BSL-S² check requested by admin (Room: ${targetRoomCode || 'Legacy'})${colors.reset}`);
+    console.log(`${colors.cyan}BSL-SÂ² check requested by admin (Room: ${targetRoomCode || 'Legacy'})${colors.reset}`);
 
     // Only send to clients who haven't already selected a folder
     let promptedCount = 0;
@@ -4039,11 +1985,11 @@ io.on('connection', (socket) => {
       }
     });
 
-    console.log(`${colors.cyan}BSL-S² check sent to ${promptedCount} clients${colors.reset}`);
+    console.log(`${colors.cyan}BSL-SÂ² check sent to ${promptedCount} clients${colors.reset}`);
     socket.emit('bsl-check-started', { clientCount: promptedCount });
   });
 
-  // Admin requests stored BSL-S² status (without triggering check)
+  // Admin requests stored BSL-SÂ² status (without triggering check)
   socket.on('bsl-get-status', () => {
     if (SERVER_MODE) {
       const roomCode = socketRoomMap.get(socket.id);
@@ -4069,7 +2015,7 @@ io.on('connection', (socket) => {
     }
 
     targetClientBslStatus.clear();
-    console.log(`${colors.yellow}BSL-S� status reset by admin (Room: ${targetRoomCode || 'Legacy'})${colors.reset}`);
+    console.log(`${colors.yellow}BSL-Sï¿½ status reset by admin (Room: ${targetRoomCode || 'Legacy'})${colors.reset}`);
 
     // Push empty status update so admin UI reflects the reset
     if (SERVER_MODE) {
@@ -4252,7 +2198,7 @@ io.on('connection', (socket) => {
     }
 
     const { clientSocketId, clientFileName, playlistIndex } = data;
-    console.log(`${colors.yellow}Manual BSL-S² match: ${clientFileName} -> playlist[${playlistIndex}] (Room: ${targetRoomCode || 'Legacy'})${colors.reset}`);
+    console.log(`${colors.yellow}Manual BSL-SÂ² match: ${clientFileName} -> playlist[${playlistIndex}] (Room: ${targetRoomCode || 'Legacy'})${colors.reset}`);
 
     const clientStatus = targetClientBslStatus.get(clientSocketId);
     if (clientStatus) {
@@ -4337,7 +2283,7 @@ io.on('connection', (socket) => {
 
     // Store drift value
     clientDrifts[playlistIndex] = clampedDrift;
-    console.log(`${colors.yellow}BSL-S² drift set: ${clientFingerprint} video[${playlistIndex}] = ${clampedDrift}s (Room: ${targetRoomCode || 'Legacy'})${colors.reset}`);
+    console.log(`${colors.yellow}BSL-SÂ² drift set: ${clientFingerprint} video[${playlistIndex}] = ${clampedDrift}s (Room: ${targetRoomCode || 'Legacy'})${colors.reset}`);
 
     // If in Server Mode, only notify clients in the specific room
     if (SERVER_MODE) {
@@ -4454,7 +2400,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Helper: Send BSL-S² status to admin
+  // Helper: Send BSL-SÂ² status to admin
   function sendBslStatusToAdmin(roomCode = null) {
     let targetAdminSocketId, targetClientBslStatus, targetClientDriftValues, targetPlaylist;
 
@@ -4492,7 +2438,7 @@ io.on('connection', (socket) => {
       });
     });
 
-    // Calculate overall BSL-S² status per video
+    // Calculate overall BSL-SÂ² status per video
     const videoBslStatus = {};
     targetPlaylist.videos.forEach((_, index) => {
       const clientsWithMatch = [];
@@ -4506,7 +2452,7 @@ io.on('connection', (socket) => {
         }
       });
 
-      // Determine if BSL-S² is active based on mode
+      // Determine if BSL-SÂ² is active based on mode
       const totalClients = targetClientBslStatus.size;
       let bslActive = false;
       if (BSL_S2_MODE === 'all') {
@@ -4717,9 +2663,9 @@ function checkForVpnProxy() {
       // Output results
       if (detectedItems.length > 0) {
         console.log('');
-        console.log(`${colors.yellow}⚠️  Active VPN/Proxy Connections Detected:${colors.reset}`);
+        console.log(`${colors.yellow}âš ï¸  Active VPN/Proxy Connections Detected:${colors.reset}`);
         detectedItems.forEach(app => {
-          console.log(`${colors.yellow}   • ${app}${colors.reset}`);
+          console.log(`${colors.yellow}   â€¢ ${app}${colors.reset}`);
         });
         console.log(`${colors.yellow}   These active connections may cause issues for clients on your network.${colors.reset}`);
         console.log(`${colors.yellow}   Consider disconnecting when hosting Sync-Player sessions.${colors.reset}`);
@@ -4739,409 +2685,6 @@ let detectedVpnProxy = [];
 app.get('/api/vpn-check', (req, res) => {
   res.json({ detected: detectedVpnProxy });
 });
-
-// Post-process generated VTT file to remove duplicate cues and ASS artifacts
-async function cleanVttFile(filePath) {
-  try {
-    if (!fs.existsSync(filePath)) return;
-
-    const content = await fs.promises.readFile(filePath, 'utf8');
-    const lines = content.split(/\r?\n/);
-
-    // Simple VTT parser to extract clean cues
-    const cleanLines = [];
-    if (lines.length > 0 && lines[0].startsWith('WEBVTT')) {
-      cleanLines.push(lines[0]);
-      cleanLines.push('');
-    }
-
-    let i = 0;
-    let lastCue = null; // { start, end, text }
-
-    while (i < lines.length) {
-      let line = lines[i];
-
-      // Check for timestamp line
-      if (line.includes('-->')) {
-        const parts = line.split(' --> ');
-        if (parts.length >= 2) {
-          const start = parts[0].trim();
-          const end = parts[1].trim();
-
-          // Collect payload (until empty line)
-          let payload = [];
-          let j = i + 1;
-          while (j < lines.length && lines[j].trim() !== '') {
-            const txt = lines[j].trim();
-            // Filter ASS drawing commands (e.g. m 10 20 ...)
-            if (!/^m\s+-?\d+/.test(txt)) {
-              payload.push(lines[j]);
-            }
-            j++;
-          }
-
-          // If payload is empty (was only drawings), skip cue entirely
-          if (payload.length > 0) {
-            const payloadText = payload.join('\n');
-
-            // Deduplicate logic: Skip this cue if identical to last one
-            let isDuplicate = false;
-            if (lastCue && lastCue.start === start && lastCue.end === end && lastCue.text === payloadText) {
-              isDuplicate = true;
-            }
-
-            if (!isDuplicate) {
-              cleanLines.push(`${start} --> ${end}`);
-              cleanLines.push(...payload);
-              cleanLines.push(''); // Separator
-
-              lastCue = { start, end, text: payloadText };
-            }
-          }
-
-          i = j; // Skip to next block
-          continue;
-        }
-      }
-      i++;
-    }
-
-    const newContent = cleanLines.join('\n');
-    await fs.promises.writeFile(filePath, newContent, 'utf8');
-    console.log(`[VTT-Clean] Processed ${path.basename(filePath)} (removed artifacts/duplicates)`);
-
-  } catch (e) {
-    console.error(`[VTT-Clean] Error processing ${path.basename(filePath)}:`, e);
-  }
-}
-
-// --- Thumbnail Helper Functions ---
-
-async function generateAudioCoverArt(videoPath, thumbnailPath) {
-  let input = null;
-  try {
-    if (!Demuxer) throw new Error('node-av Demuxer not available');
-
-    console.log(`${colors.cyan}Processing audio cover art with node-av for: ${path.basename(videoPath)}${colors.reset}`);
-    input = await Demuxer.open(videoPath);
-    let coverStream = null;
-
-    // 1. Look for stream with AV_DISPOSITION_ATTACHED_PIC (0x0400 = 1024)
-    for (const stream of input.streams) {
-      if (stream.disposition & 1024) {
-        coverStream = stream;
-        break;
-      }
-    }
-
-    // 2. If not found, look for video stream
-    if (!coverStream) {
-      for (const stream of input.streams) {
-        if (stream.codecpar && (stream.codecpar.codecType === 0 || stream.codecpar.type === 'video')) {
-          coverStream = stream;
-          break;
-        }
-      }
-    }
-
-    if (coverStream) {
-      console.log(`${colors.cyan}Found cover art stream #${coverStream.index}. Extracting...${colors.reset}`);
-      let found = false;
-      for await (const packet of input.packets(coverStream.index)) {
-        if (packet.streamIndex === coverStream.index) {
-          if (packet.data && packet.data.length > 0) {
-            // Detect actual image format from magic bytes to avoid writing PNG data
-            // into a .jpg file (which browsers reject as a broken image).
-            const bytes = packet.data;
-            const isPng  = bytes[0] === 0x89 && bytes[1] === 0x50; // \x89P
-            const isJpeg = bytes[0] === 0xFF && bytes[1] === 0xD8;  // JFIF/EXIF
-            const isWebp = bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50; // WEBP
-
-            // Determine the correct file extension
-            let actualExt = '.jpg'; // default/assume JPEG
-            if (isPng)  actualExt = '.png';
-            else if (isWebp) actualExt = '.webp';
-            else if (!isJpeg) {
-              console.warn(`${colors.yellow}[CoverArt] Unknown image magic bytes for ${path.basename(videoPath)}, writing anyway${colors.reset}`);
-            }
-
-            // If the requested thumbnailPath has the wrong extension, use the real one
-            const actualPath = thumbnailPath.replace(/\.jpg$/, actualExt);
-            fs.writeFileSync(actualPath, bytes);
-
-            // Validate non-zero output
-            const stat = fs.statSync(actualPath);
-            if (stat.size === 0) {
-              fs.unlinkSync(actualPath);
-              console.warn(`${colors.yellow}[CoverArt] Zero-byte cover art written, discarding${colors.reset}`);
-              packet.free();
-              break;
-            }
-
-            console.log(`${colors.green}Extracted cover art to: ${actualPath}${colors.reset}`);
-            found = true;
-          }
-          packet.free();
-          break;
-        }
-        packet.free();
-      }
-      return found;
-    }
-
-    return false;
-  } catch (err) {
-    console.error(`${colors.red}Error extracting audio cover art: ${err.message}${colors.reset}`);
-    return false;
-  } finally {
-    if (input && typeof input.close === 'function') {
-      await input.close();
-    }
-  }
-}
-
-async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFilename) {
-  if (!Demuxer || !Decoder || !Encoder || !FilterAPI || !Muxer) return false;
-
-  let input = null;
-  let output = null;
-  try {
-    console.log(`${colors.cyan}Processing thumbnail with node-av for: ${safeFilename}${colors.reset}`);
-
-    // Check for master thumbnail to reuse
-    const masterFilename = safeFilename.replace(/\.[^.]+$/, '.jpg');
-    const masterPath = path.join(THUMBNAIL_DIR, masterFilename);
-    let inputPath = videoPath;
-    let isImageInput = false;
-
-    if (width !== 720 && fs.existsSync(masterPath)) {
-      // Verify master is non-empty before trusting it as a downscale source
-      const masterStat = fs.statSync(masterPath);
-      if (masterStat.size > 0) {
-        inputPath = masterPath;
-        isImageInput = true;
-        console.log(`${colors.cyan}Downscaling existing master thumbnail for ${safeFilename}${colors.reset}`);
-      }
-    }
-
-    input = await Demuxer.open(inputPath);
-    const videoStream = input.video();
-    if (!videoStream) throw new Error('No video stream found');
-
-    if (!isImageInput) {
-      const duration = input.duration > 0 ? input.duration : (await getVideoDuration(videoPath));
-      const seed = safeFilename.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-      const seekPct = Math.max(0.01, (seed % 20) / 100);
-      const seekTime = Math.max(1, Math.floor(duration * seekPct));
-      console.log(`${colors.cyan}Seeking deterministically to ${seekTime}s (duration: ${duration}s)${colors.reset}`);
-      try {
-        await input.seek(seekTime);
-      } catch (seekErr) {
-        // Some containers (e.g. certain MPEG-TS streams) don't support seeking.
-        // Continue from the start rather than failing entirely.
-        console.warn(`${colors.yellow}[Thumbnail] Seek failed for ${safeFilename}, reading from start: ${seekErr.message}${colors.reset}`);
-      }
-    }
-
-    const decoder = await Decoder.create(videoStream);
-    output = await Muxer.open(thumbnailPath, { format: 'image2', update: '1' });
-
-    const packetGen = input.packets(videoStream.index);
-    const frameGen = decoder.frames(packetGen);
-
-    let gotFrame = false;
-    let encoder = null;
-    let outStreamIdx = -1;
-    let filter = null;
-
-    for await (const frame of frameGen) {
-      if (!gotFrame) {
-        // Use scale=-2:height (even-rounding) instead of -1 (odd-rounding).
-        // MJPEG requires dimensions divisible by 2; -1 can produce odd widths
-        // on videos whose natural aspect ratio gives a fractional pixel count,
-        // causing "width/height not divisible by 2" encoder errors.
-        filter = await FilterAPI.create(`scale=-2:${width},format=yuv420p`, {
-          width: frame.width,
-          height: frame.height,
-          pixelFormat: frame.format,
-          timeBase: videoStream.timeBase
-        });
-
-        const filteredFrames = await filter.processAll(frame);
-        for (const filteredFrame of filteredFrames) {
-          if (!encoder) {
-            const { FF_ENCODER_MJPEG } = require('node-av/constants');
-            encoder = await Encoder.create(FF_ENCODER_MJPEG, {
-              timeBase: { num: 1, den: 1 },
-              width: filteredFrame.width,
-              height: filteredFrame.height,
-              pixelFormat: filteredFrame.format
-            });
-            outStreamIdx = output.addStream(encoder);
-          }
-          const packets = await encoder.encodeAll(filteredFrame);
-          for (const pkt of packets) await output.writePacket(pkt, outStreamIdx);
-        }
-
-        if (encoder) {
-          for await (const pkt of encoder.flushPackets()) await output.writePacket(pkt, outStreamIdx);
-        }
-        gotFrame = true;
-        break;
-      }
-    }
-
-    // Close output before checking file size so all data is flushed to disk
-    if (output && typeof output.close === 'function') {
-      await output.close();
-      output = null;
-    }
-
-    if (gotFrame) {
-      // Guard against a 0-byte file (can happen if the muxer opened successfully
-      // but no packets were actually written, e.g. encoder produced no output).
-      try {
-        const stat = fs.statSync(thumbnailPath);
-        if (stat.size === 0) {
-          fs.unlinkSync(thumbnailPath);
-          console.warn(`${colors.yellow}[Thumbnail] node-av wrote a 0-byte thumbnail for ${safeFilename}, discarding${colors.reset}`);
-          return false;
-        }
-      } catch (_) { /* stat failed — treat as missing */ return false; }
-
-      console.log(`${colors.green}Generated thumbnail via node-av for: ${safeFilename}${colors.reset}`);
-      return true;
-    }
-    return false;
-
-  } catch (avError) {
-    console.error(`${colors.yellow}node-av thumbnail failed:${colors.reset}`, avError.message);
-    // Remove any partial/empty file left by a failed muxer open or write
-    try { if (fs.existsSync(thumbnailPath)) fs.unlinkSync(thumbnailPath); } catch (_) {}
-    return false;
-  } finally {
-    if (output && typeof output.close === 'function') {
-      try { await output.close(); } catch (_) {}
-    }
-    if (input && typeof input.close === 'function') {
-      await input.close();
-    }
-  }
-}
-
-async function generateThumbnailFfmpeg(videoPath, thumbnailPath, width, safeFilename) {
-  const duration = await getVideoDuration(videoPath);
-  const firstThird = Math.max(duration / 3, 1);
-  const randomTime = Math.random() * firstThird;
-  const seekTime = Math.max(1, Math.floor(randomTime));
-
-  console.log(`${colors.cyan}Generating ${width}px thumbnail for ${safeFilename} at ${seekTime}s${colors.reset}`);
-
-  // Use scale=-2:height (even-rounding) for FFmpeg CLI as well, matching node-av path.
-  const scaleFilter = `scale=-2:${width}`;
-
-  const runFfmpeg = (ssTime) => new Promise((resolve, reject) => {
-    execFile(getFFmpegBin(), [
-      '-ss', String(ssTime),
-      '-i', videoPath,
-      '-vframes', '1',
-      '-vf', scaleFilter,
-      '-q:v', '2',
-      '-y',
-      thumbnailPath
-    ], (error) => {
-      if (error) return reject(error);
-      // Verify the output file is present and non-empty
-      try {
-        const stat = fs.statSync(thumbnailPath);
-        if (stat.size === 0) {
-          try { fs.unlinkSync(thumbnailPath); } catch (_) {}
-          return reject(new Error('FFmpeg produced a 0-byte thumbnail'));
-        }
-      } catch (_) {
-        return reject(new Error('Thumbnail file missing after FFmpeg completed'));
-      }
-      resolve();
-    });
-  });
-
-  try {
-    await runFfmpeg(seekTime);
-    console.log(`${colors.green}Generated thumbnail for: ${safeFilename}${colors.reset}`);
-  } catch (firstErr) {
-    // Fallback: try from 1 second (handles files where the sought frame is beyond duration)
-    console.warn(`${colors.yellow}[Thumbnail] FFmpeg seek to ${seekTime}s failed for ${safeFilename}, retrying at 1s: ${firstErr.message}${colors.reset}`);
-    await runFfmpeg(1); // throws if this also fails — caught by the caller
-    console.log(`${colors.green}Generated thumbnail (fallback) for: ${safeFilename}${colors.reset}`);
-  }
-}
-
-// Function to detect available FFmpeg encoders
-function detectEncoders() {
-  const memoryPath = path.join(MEMORY_DIR, 'memory.json');
-  let memory = {};
-
-  if (fs.existsSync(memoryPath)) {
-    try {
-      memory = JSON.parse(fs.readFileSync(memoryPath, 'utf8'));
-    } catch (e) { console.error('Error reading memory.json:', e); }
-  }
-
-  // Check if encoders already detected
-  if (memory.encoders && Array.isArray(memory.encoders) && memory.encoders.length > 0) {
-    return;
-  }
-
-  // Use bundled ffmpeg from node-av via official API
-  let ffmpegPath = 'ffmpeg';
-  try {
-    // Use require to get the helper (returns function that returns path)
-    const { ffmpegPath: getFfmpegPath } = require('node-av/ffmpeg');
-    const bundledPath = getFfmpegPath();
-    if (bundledPath) {
-      ffmpegPath = bundledPath;
-    }
-  } catch (e) {
-    console.warn('[FFmpeg] Could not load node-av/ffmpeg helper:', e.message);
-    // Fallback to manual check if API fails
-    const bundledManual = path.join(__dirname, 'node_modules', 'node-av', 'binary', 'ffmpeg.exe');
-    if (fs.existsSync(bundledManual)) {
-      ffmpegPath = bundledManual;
-    }
-  }
-
-  exec(`"${ffmpegPath}" -encoders`, (error, stdout, stderr) => {
-    if (error) {
-      console.error('[FFmpeg] Failed to detect encoders:', error);
-      return;
-    }
-
-    const encoders = [];
-    const lines = stdout.split('\n');
-    const regex = /^\s*([V A S])[A-Z.]+\s+([a-zA-Z0-9_-]+)\s+(.*)$/;
-
-    lines.forEach(line => {
-      const match = line.match(regex);
-      if (match) {
-        encoders.push({
-          type: match[1] === 'V' ? 'video' : (match[1] === 'A' ? 'audio' : 'subtitle'),
-          name: match[2],
-          description: match[3].trim()
-        });
-      }
-    });
-
-    memory.encoders = encoders;
-
-    // Save to memory.json
-    try {
-      if (!fs.existsSync(MEMORY_DIR)) fs.mkdirSync(MEMORY_DIR, { recursive: true });
-      fs.writeFileSync(memoryPath, JSON.stringify(memory, null, 2));
-    } catch (e) {
-      console.error('[FFmpeg] Failed to save encoders to memory.json:', e);
-    }
-  });
-}
 
 server.listen(PORT, () => {
   const protocol = (config.use_https === 'true' || PORT === 443 || PORT === 8443) ? 'https' : 'http';
