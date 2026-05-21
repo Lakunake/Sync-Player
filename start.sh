@@ -368,7 +368,7 @@ else
     # Linux
     LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
     if [ -z "$LOCAL_IP" ]; then
-        LOCAL_IP=$(ip route get 1.11.0.1 2>/dev/null | awk '{print $7}' | head -n1)
+        LOCAL_IP=$(ip route get 1.11.1.1 2>/dev/null | awk '{print $7}' | head -n1)
     fi
     if [ -z "$LOCAL_IP" ]; then
         LOCAL_IP="localhost"
@@ -414,7 +414,7 @@ fi
 # Display server information
 # =================================================================
 echo ""
-echo -e "\033[36mSync-Player 1.11.0\033[0m"
+echo -e "\033[36mSync-Player 1.11.1\033[0m"
 echo -e "\033[36m==========================\033[0m"
 echo ""
 echo -e "\033[33mSettings:\033[0m"

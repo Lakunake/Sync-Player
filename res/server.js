@@ -1202,45 +1202,47 @@ io.on('connection', (socket) => {
       }
     });
 
-    // Unified chat message handler (works in both server and legacy mode)
-    socket.on('chat-message', (data) => {
-      if (!CHAT_ENABLED) return;
-
-      const ctx = resolveContext(socket.id, legacyState, io);
-      if (!ctx) return;
-
-      const message = data.message?.trim() || '';
-
-      // Handle /rename command
-      if (message.toLowerCase().startsWith('/rename ')) {
-        const newName = message.substring(8).trim().substring(0, 32);
-        if (newName) {
-          const clientInfo = connectedClients.get(socket.id);
-          if (clientInfo && clientInfo.fingerprint) {
-            const oldName = clientDisplayNames[clientInfo.fingerprint] || data.sender || 'Guest';
-            setClientName(clientInfo.fingerprint, newName);
-            socket.emit('name-updated', { newName });
-            ctx.emit('chat-message', {
-              sender: 'System',
-              message: `${escapeHTML(oldName)} is now known as ${escapeHTML(newName)}`,
-              timestamp: Date.now(),
-              isSystem: true
-            });
-          }
-        }
-        return;
-      }
-
-      // Broadcast message (properly escaped)
-      ctx.emit('chat-message', {
-        sender: escapeHTML(data.sender || 'Guest'),
-        message: escapeHTML(message.substring(0, 500)),
-        timestamp: Date.now()
-      });
-    });
 
     // Server mode: don't run legacy initialization, but continue to register event handlers below
   }
+
+  // Unified chat message handler (works in both server and legacy mode)
+  socket.on('chat-message', (data) => {
+    if (!CHAT_ENABLED) return;
+
+    const ctx = resolveContext(socket.id, legacyState, io);
+    if (!ctx) return;
+
+    const message = data.message?.trim() || '';
+
+    // Handle /rename command
+    if (message.toLowerCase().startsWith('/rename ')) {
+      const newName = message.substring(8).trim().substring(0, 32);
+      if (newName) {
+        const clientInfo = connectedClients.get(socket.id);
+        if (clientInfo && clientInfo.fingerprint) {
+          const oldName = clientDisplayNames[clientInfo.fingerprint] || data.sender || 'Guest';
+          setClientName(clientInfo.fingerprint, newName);
+          socket.emit('name-updated', { newName });
+          ctx.emit('chat-message', {
+            sender: 'System',
+            message: `${escapeHTML(oldName)} is now known as ${escapeHTML(newName)}`,
+            timestamp: Date.now(),
+            isSystem: true
+          });
+        }
+      }
+      return;
+    }
+
+    // Broadcast message (properly escaped)
+    ctx.emit('chat-message', {
+      sender: escapeHTML(data.sender || 'Guest'),
+      message: escapeHTML(message.substring(0, 500)),
+      timestamp: Date.now()
+    });
+  });
+
 
   // ==================== Legacy Single-Room Mode Initialization ====================
   // Only run legacy initialization for non-server mode
