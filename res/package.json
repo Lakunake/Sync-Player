@@ -1,6 +1,6 @@
 {
   "name": "sync-player",
-  "version": "1.11.1",
+  "version": "1.11.2",
   "description": "Feature-Rich synchronized video player for multiple clients",
   "main": "server.js",
   "scripts": {

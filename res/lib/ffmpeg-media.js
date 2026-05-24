@@ -418,7 +418,7 @@ function detectEncoders() {
     const bundledPath = getFfmpegPath();
     if (bundledPath) ffBin = bundledPath;
   } catch (e) {
-    const bundledManual = path.join(__dirname, '..', 'node_modules', 'node-av', 'binary', 'ffmpeg.exe');
+    const bundledManual = path.join(ROOT_DIR, 'node_modules', 'node-av', 'binary', 'ffmpeg.exe');
     if (fs.existsSync(bundledManual)) ffBin = bundledManual;
   }
 

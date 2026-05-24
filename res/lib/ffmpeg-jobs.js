@@ -371,8 +371,19 @@ function registerFFmpegRoutes(app) {
 
   // List available encoders
   app.get('/api/ffmpeg/encoders', (req, res) => {
-    const encoders = getEncoders();
-    res.json({ encoders: encoders || [] });
+    let encoders = getEncoders();
+    if (encoders && encoders.length > 0) {
+      // Map objects to strings for the frontend
+      encoders = encoders.filter(e => e.type === 'video').map(e => e.name);
+      if (!encoders.includes('cpu')) encoders.unshift('cpu');
+    } else {
+      // Fallback if detection hasn't finished or failed
+      encoders = ['cpu', 'libx264', 'libx265'];
+      if (HardwareContext) {
+        encoders.push('h264_nvenc', 'hevc_nvenc', 'h264_amf', 'hevc_amf', 'h264_qsv', 'hevc_qsv');
+      }
+    }
+    res.json({ encoders });
   });
 }
 
