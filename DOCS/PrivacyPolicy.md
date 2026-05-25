@@ -1,6 +1,6 @@
-# Privacy Policy — Sync-Player (Minecraft WebDisplays Sync-Player)
+# Privacy Policy — Sync-Player
 
-**Last updated:** May 2025
+**Last updated:** May 2026
 **Software version:** Sync-Player (AGPLv3)
 **GitHub:** <https://github.com/Lakunake/Sync-Player>
 
