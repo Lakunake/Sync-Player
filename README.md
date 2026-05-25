@@ -164,7 +164,9 @@ SYNC_SKIP_FIREWALL_CHECK=false     # See firewall warning above
 
 ---
 
-## License
+## Legal
+
+### License
 
 **Short name**: `AGPL-3.0-or-later`
 **URL**: [gnu.org/licenses/agpl-3.0.html](https://www.gnu.org/licenses/agpl-3.0.html)
@@ -176,6 +178,10 @@ This project is licensed under **AGPLv3**:
 *  Must share any changes with the same license **if distributed or hosted publicly**
 
 See [LICENSE](LICENSE) for more details.
+
+### Privacy Policy
+
+See [here](DOCS/PrivacyPolicy.md) for Privacy Policy
 
 ---
 
