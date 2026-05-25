@@ -42,7 +42,7 @@ These Terms apply to both parties. If you are an Operator, you accept the additi
 
 Sync-Player is free, open-source software licensed under the **AGPLv3**. Under this license, you are free to use, modify, and redistribute the software, subject to one key condition: if you publicly deploy a modified version of Sync-Player, you must make your modifications available under the same AGPLv3 license.
 
-The full license text is available at: https://www.gnu.org/licenses/agpl-3.0.html
+The full license text is available at: <https://www.gnu.org/licenses/agpl-3.0.html>
 
 These Terms of Service govern your use of Sync-Player as a software product. The AGPLv3 governs the source code itself. Together, these two documents represent the complete terms applicable to Sync-Player. In the event of any conflict between these Terms and the AGPLv3 with respect to software licensing, the AGPLv3 prevails.
 

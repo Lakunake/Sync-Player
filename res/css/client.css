@@ -683,30 +683,47 @@
       /* Hide send button, rely on Enter */
     }
 
-    /* Ghost Privacy Policy link — bottom-left corner */
-    #privacy-link {
+    /* Ghost legal bar — bottom-left corner */
+    #legal-bar {
       position: fixed;
       bottom: 8px;
       left: 10px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
       font-family: Arial, sans-serif;
       font-size: 10px;
       color: rgba(255, 255, 255, 0.4);
-      text-decoration: none;
-      letter-spacing: 0.3px;
       z-index: 200;
       opacity: 0.4;
-      transition: opacity 0.3s ease, color 0.3s ease;
+      transition: opacity 0.3s ease;
       pointer-events: auto;
     }
 
-    #privacy-link:hover {
+    #legal-bar a {
+      color: rgba(255, 255, 255, 0.4);
+      text-decoration: none;
+      letter-spacing: 0.3px;
+      transition: color 0.3s ease;
+    }
+
+    #legal-bar:hover {
       opacity: 1;
+    }
+
+    #legal-bar:hover a,
+    #legal-bar a:hover {
       color: #fff;
     }
 
+    .legal-sep {
+      opacity: 0.5;
+      user-select: none;
+    }
+
     /* Hide with other UI controls during idle */
-    body.idle #privacy-link {
+    body.idle #legal-bar {
       opacity: 0;
       pointer-events: none;
       transition: opacity 0.5s ease;
-    }
+    }
