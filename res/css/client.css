@@ -682,3 +682,31 @@
       display: none;
       /* Hide send button, rely on Enter */
     }
+
+    /* Ghost Privacy Policy link — bottom-left corner */
+    #privacy-link {
+      position: fixed;
+      bottom: 8px;
+      left: 10px;
+      font-family: Arial, sans-serif;
+      font-size: 10px;
+      color: rgba(255, 255, 255, 0.4);
+      text-decoration: none;
+      letter-spacing: 0.3px;
+      z-index: 200;
+      opacity: 0.4;
+      transition: opacity 0.3s ease, color 0.3s ease;
+      pointer-events: auto;
+    }
+
+    #privacy-link:hover {
+      opacity: 1;
+      color: #fff;
+    }
+
+    /* Hide with other UI controls during idle */
+    body.idle #privacy-link {
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.5s ease;
+    }
