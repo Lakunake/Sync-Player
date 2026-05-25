@@ -179,9 +179,9 @@ This project is licensed under **AGPLv3**:
 
 See [LICENSE](LICENSE) for more details.
 
-### Privacy Policy
+### Legal Documents
 
-See [here](DOCS/PrivacyPolicy.md) for Privacy Policy
+See [Documents Folder](DOCS) for [Privacy Policy](DOCS/PrivacyPolicy.md) and [Terms of Service](DOCS/TERMS_OF_SERVICE.md)
 
 ---
 
