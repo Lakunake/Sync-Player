@@ -1,4 +1,4 @@
-# Privacy Policy — Sync-Player (Minecraft WebDisplays Sync-Player)
+# Privacy Policy — Sync-Player
 
 **Last updated:** May 2025
 **Software version:** Sync-Player (AGPLv3)
