@@ -88,7 +88,7 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 
 
 > [!NOTE]
->  All users will see the same video at the same time except for **volume**, which is controlled individually per client.
+>  All users will see the same video with the same attributes except for **volume**, which is controlled individually per client.
 
 ---
 
