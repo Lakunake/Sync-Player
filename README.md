@@ -82,9 +82,10 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 - File browser for media management
 - FFmpeg generated thumbnail for video from the first third of the video
 - Tab to use various ffmpeg tools
-<img width="1919" height="909" alt="image" src="https://github.com/user-attachments/assets/16706deb-cc7f-4ea4-8830-1dc88f141eeb" />
-<img width="1919" height="909" alt="image" src="https://github.com/user-attachments/assets/26cda4d9-69e0-4441-a218-e0e05c085b0e" />
-<img width="1832" height="933" alt="image" src="https://github.com/user-attachments/assets/359ef7b1-b0c7-40d4-a734-fd16cd6c78e5" />
+<img width="1919" height="943" alt="image" src="https://github.com/user-attachments/assets/2821e24d-b946-456b-bda7-30e540e0ba02" />
+<img width="1919" height="943" alt="image" src="https://github.com/user-attachments/assets/8b1eab02-70e3-4156-9594-059cf3ce46d7" />
+<img width="1866" height="918" alt="image" src="https://github.com/user-attachments/assets/f69bce7e-78a0-4be0-9c78-c43e018275df" />
+
 
 > [!NOTE]
 >  All users will see the same video at the same time except for **volume**, which is controlled individually per client.
