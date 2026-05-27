@@ -79,7 +79,8 @@ class SubtitleRenderer {
             if (line.includes('-->')) {
                 const parts = line.split('-->');
                 const start = this.parseTime(parts[0].trim());
-                const end = this.parseTime(parts[1].trim());
+                // Strip VTT position/alignment metadata after end time (e.g. "00:05.000 position:10%")
+                const end = this.parseTime(parts[1].trim().split(/\s+/)[0]);
 
                 // Collect text payload
                 let payload = [];
@@ -119,6 +120,7 @@ class SubtitleRenderer {
                     start,
                     end,
                     text: textContent,
+                    rawText: textContent, // Parity with ASS cues for diff-check in update()
                     html: textContent.replace(/<v [^>]+>/g, '').replace(/<\/v>/g, ''), // Basic strip of voice tags
                     format: 'vtt'
                 });
@@ -288,7 +290,7 @@ class SubtitleRenderer {
             overrides.alignment = parseInt(anMatch[1]);
         }
 
-        const cMatch = text.match(/\\c&H([0-9a-fA-F]+)&/);
+        const cMatch = text.match(/\\(?:\d?)c&H([0-9a-fA-F]+)&/);
         if (cMatch) {
             overrides.color = this.assColorToCss(cMatch[1]);
         }
@@ -317,7 +319,7 @@ class SubtitleRenderer {
         const frxMatch = text.match(/\\frx(-?[\d.]+)/);
         const fryMatch = text.match(/\\fry(-?[\d.]+)/);
         const frzMatch = text.match(/\\frz(-?[\d.]+)/);
-        const frMatch = text.match(/\\fr(-?[\d.]+)/); // Defaults to Z
+        const frMatch = text.match(/\\fr(?![xyz])(-?[\d.]+)/); // Bare \fr defaults to Z, negative lookahead prevents stealing from \frx/y/z
 
         if (frxMatch || fryMatch || frzMatch || frMatch) {
             overrides.rotation = {
@@ -605,21 +607,23 @@ class SubtitleRenderer {
                     this.applyFlexAlignment(div, alignment, style, scaleX, scaleY);
                 }
 
-                // Font Styling
-                div.style.fontSize = (fontSize * scaleY) + 'px'; // Scale font by Y
-                div.style.fontFamily = style.Fontname || 'Arial, sans-serif';
+                // Font Styling — only apply defaults if overrides didn't already set them
+                if (!cue.overrides || !cue.overrides.fontSize) {
+                    div.style.fontSize = (fontSize * scaleY) + 'px';
+                }
+                if (!cue.overrides || !cue.overrides.fontName) {
+                    div.style.fontFamily = style.Fontname || 'Arial, sans-serif';
+                }
                 if (bold) div.style.fontWeight = 'bold';
                 if (italic) div.style.fontStyle = 'italic';
 
-                // Outline/Shadow
-                // Already defined above: outlineWidth
-
-                // CSS text-stroke is non-standard but widely supported. Text-shadow is safer.
-                // Simulating outline with text-shadow
-                if (outlineWidth > 0) {
-                    const o = outlineWidth;
-                    const c = outlineColor;
-                    div.style.textShadow = `-${o}px -${o}px 0 ${c}, ${o}px -${o}px 0 ${c}, -${o}px ${o}px 0 ${c}, ${o}px ${o}px 0 ${c}`;
+                // Outline/Shadow — only apply defaults if overrides didn't already set text-shadow
+                if (!cue.overrides || (cue.overrides.border === undefined && cue.overrides.shadow === undefined && cue.overrides.blur === undefined)) {
+                    if (outlineWidth > 0) {
+                        const o = outlineWidth;
+                        const c = outlineColor;
+                        div.style.textShadow = `-${o}px -${o}px 0 ${c}, ${o}px -${o}px 0 ${c}, -${o}px ${o}px 0 ${c}, ${o}px ${o}px 0 ${c}`;
+                    }
                 }
             }
 

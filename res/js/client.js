@@ -880,7 +880,7 @@ function tryDirectTrackManipulation() {
           jassubInstance.destroy();
           jassubInstance = null;
         }
-        subtitleRenderer.disable();
+        if (subtitleRenderer) subtitleRenderer.disable();
       }
       else if (currentVideoInfo.tracks && currentVideoInfo.tracks.subtitles) {
         const track = currentVideoInfo.tracks.subtitles[targetSubIndex];
@@ -1272,7 +1272,7 @@ async function loadJASSUB(trackUrl) {
   }
   console.error('[Subtitle] JASSUB failed, falling back to built-in renderer');
   showTemporaryMessage('JASSUB unavailable, using fallback renderer', 3000);
-  subtitleRenderer.loadTrack(trackUrl, 'ass');
+  if (subtitleRenderer) subtitleRenderer.loadTrack(trackUrl, 'ass');
 }
 
 function tryVideoAttributes() {
@@ -2703,18 +2703,5 @@ if (typeof socket !== 'undefined') {
   });
 }
 
-// Initialize Subtitle Renderer when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-  if (typeof SubtitleRenderer !== 'undefined') {
-    const vid = document.getElementById('video');
-    const overlay = document.getElementById('subtitle-overlay');
-    if (vid && overlay) {
-      subtitleRenderer = new SubtitleRenderer(vid, overlay);
-      console.log('SubtitleRenderer initialized');
-    } else {
-      console.error('Video or Overlay element not found for SubtitleRenderer');
-    }
-  } else {
-    console.error('SubtitleRenderer class is not defined. Check script loading order.');
-  }
-});
+// DOMContentLoaded listener for Subtitle Renderer initialization removed to prevent double-initialization
+// since it is already initialized inline with a requestAnimationFrame loop earlier in this file.
