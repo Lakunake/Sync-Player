@@ -259,7 +259,11 @@ class SubtitleRenderer {
                         // Instead, we just strip K tags for 'text' and keep them in 'html' if we were to support it.
                     }
 
-                    const cleanText = rawText.replace(/{[^}]+}/g, '').replace(/\\N/g, '<br>').replace(/\\n/g, ' ');
+                    // 1. Strip ASS drawing commands specifically
+                    let noDrawing = rawText.replace(/{\\[^}]*p[1-9][^}]*}.*?(?:{\\[^}]*p0[^}]*}|$)/gi, '');
+                    
+                    // 2. Strip remaining ASS tags and convert newlines
+                    const cleanText = noDrawing.replace(/{[^}]+}/g, '').replace(/\\N/g, '<br>').replace(/\\n/g, ' ');
 
                     this.cues.push({
                         start,

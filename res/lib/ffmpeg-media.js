@@ -80,28 +80,54 @@ async function cleanVttFile(filePath) {
           const start = parts[0].trim();
           const end = parts[1].trim();
 
-          let payload = [];
+          let rawPayload = [];
           let j = i + 1;
           while (j < lines.length && lines[j].trim() !== '') {
-            const txt = lines[j].trim();
-            if (!/^m\s+-?\d+/.test(txt)) {
-              payload.push(lines[j]);
-            }
+            rawPayload.push(lines[j]);
             j++;
           }
 
-          if (payload.length > 0) {
-            const payloadText = payload.join('\n');
-            let isDuplicate = false;
-            if (lastCue && lastCue.start === start && lastCue.end === end && lastCue.text === payloadText) {
-              isDuplicate = true;
+          if (rawPayload.length > 0) {
+            let payloadText = rawPayload.join('\n');
+            
+            // 1. Strip ASS drawing commands specifically if tags survived
+            payloadText = payloadText.replace(/{\\[^}]*p[1-9][^}]*}.*?(?:{\\[^}]*p0[^}]*}|$)/gi, '');
+            
+            // 2. Strip remaining ASS tags { ... }
+            payloadText = payloadText.replace(/{[^}]+}/g, '');
+            
+            // 3. Convert \N and \n to real newlines
+            payloadText = payloadText.replace(/\\[Nn]/g, '\n');
+            
+            let newLines = payloadText.split('\n');
+            let finalPayload = [];
+            
+            for (let line of newLines) {
+              let txt = line.trim();
+              if (txt === '') continue; // Skip empty lines
+              
+              // Check if it's an orphaned drawing command (e.g. ffmpeg stripped the {\p1} tags)
+              let txtNoTags = txt.replace(/<[^>]+>/g, '').trim();
+              if (/^m\s+-?\d+/.test(txtNoTags)) {
+                continue; // Skip this line
+              }
+              
+              finalPayload.push(txt);
             }
 
-            if (!isDuplicate) {
-              cleanLines.push(`${start} --> ${end}`);
-              cleanLines.push(...payload);
-              cleanLines.push('');
-              lastCue = { start, end, text: payloadText };
+            if (finalPayload.length > 0) {
+              const finalPayloadText = finalPayload.join('\n');
+              let isDuplicate = false;
+              if (lastCue && lastCue.start === start && lastCue.end === end && lastCue.text === finalPayloadText) {
+                isDuplicate = true;
+              }
+
+              if (!isDuplicate) {
+                cleanLines.push(`${start} --> ${end}`);
+                cleanLines.push(...finalPayload);
+                cleanLines.push('');
+                lastCue = { start, end, text: finalPayloadText };
+              }
             }
           }
 
@@ -293,21 +319,39 @@ async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFile
 }
 
 async function generateThumbnailFfmpeg(videoPath, thumbnailPath, width, safeFilename) {
-  const duration = await getVideoDuration(videoPath);
-  const firstThird = Math.max(duration / 3, 1);
-  const randomTime = Math.random() * firstThird;
-  const seekTime = Math.max(1, Math.floor(randomTime));
+  const masterFilename = safeFilename.replace(/\.[^.]+$/, '.jpg');
+  const masterPath = path.join(THUMBNAIL_DIR, masterFilename);
+  let inputPath = videoPath;
+  let isImageInput = false;
+  let seekTime = 1;
 
-  console.log(`${colors.cyan}Generating ${width}px thumbnail for ${safeFilename} at ${seekTime}s${colors.reset}`);
+  if (width !== 720 && fs.existsSync(masterPath)) {
+    const masterStat = fs.statSync(masterPath);
+    if (masterStat.size > 0) {
+      inputPath = masterPath;
+      isImageInput = true;
+      console.log(`${colors.cyan}Downscaling existing master thumbnail for ${safeFilename} via CLI${colors.reset}`);
+    }
+  }
+
+  if (!isImageInput) {
+    const duration = await getVideoDuration(videoPath);
+    const seed = safeFilename.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    const seekPct = Math.max(0.01, (seed % 20) / 100);
+    seekTime = Math.max(1, Math.floor(duration * seekPct));
+    console.log(`${colors.cyan}Generating ${width}px thumbnail for ${safeFilename} at ${seekTime}s (CLI)${colors.reset}`);
+  }
 
   const scaleFilter = `scale=-2:${width}`;
 
   const runFfmpeg = (ssTime) => new Promise((resolve, reject) => {
-    execFile(getFFmpegBin(), [
-      '-ss', String(ssTime), '-i', videoPath,
-      '-vframes', '1', '-vf', scaleFilter,
-      '-q:v', '2', '-y', thumbnailPath
-    ], (error) => {
+    const args = [];
+    if (!isImageInput) {
+      args.push('-ss', String(ssTime));
+    }
+    args.push('-i', inputPath, '-vframes', '1', '-vf', scaleFilter, '-q:v', '2', '-y', thumbnailPath);
+    
+    execFile(getFFmpegBin(), args, (error) => {
       if (error) return reject(error);
       try {
         const stat = fs.statSync(thumbnailPath);
