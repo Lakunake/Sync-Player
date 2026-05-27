@@ -19,12 +19,12 @@ A FULLY synchronized non-coder friendly HTML5 video player originally for Minecr
     - [Client Controls (Touch/Click Interface)](#client-controls-touchclick-interface)
     - [Admin Controls (Web Interface)](#admin-controls-web-interface)
   - [Firewall Warning](#firewall-warning)
-  - [📁 File Structure](#-file-structure)
-  - [⚙️ Configuration](#️-configuration)
+  - [File Structure](#-file-structure)
+  - [Configuration](#️-configuration)
   - [Legal](#legal)
     - [License](#license)
     - [Legal Documents](#legal-documents)
-  - [🙏 Credits](#-credits)
+  - [Credits](#-credits)
 
 ---
 
@@ -111,7 +111,7 @@ SYNC_SKIP_FIREWALL_CHECK=true
 
 ---
 
-## 📁 File Structure
+## File Structure
 
 ```
 /media/                # Folder containing media files
@@ -137,7 +137,7 @@ subtitles.js           # wsr code
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 Edit `config.env` to customize:
 
@@ -191,7 +191,7 @@ See [Documents Folder](DOCS) for [Privacy Policy](DOCS/PrivacyPolicy.md) and [Te
 
 ---
 
-## 🙏 Credits
+## Credits
 
 Created by **Lakunake**
 Built using Node.js and many [node modules](res/package.json)
