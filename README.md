@@ -7,61 +7,62 @@ A FULLY synchronized non-coder friendly HTML5 video player originally for Minecr
 ### [Read Hosting Methods Here!!](https://github.com/Lakunake/Sync-Player/blob/main/DOCS/Hosting%20Methods.md)
 
 ---
+
 ## Table of Contents
 
-* [Requirements](#requirements)
-* [Features](#features)
-* [Controls](#controls)
-    * [Client Controls](#client-controls-touchclick-interface)
-    * [Admin Controls](#admin-controls-web-interface)
-* [Firewall Warning](#firewall-warning)
-* [File Structure](#-file-structure)
-* [Configuration](#️-configuration)
-* [License](#license)
-* [Credits](#-credits)
+- [Sync-Player](#sync-player)
+    - [Read Hosting Methods Here!!](#read-hosting-methods-here)
+  - [Table of Contents](#table-of-contents)
+  - [Requirements](#requirements)
+  - [Features](#features)
+  - [Controls](#controls)
+    - [Client Controls (Touch/Click Interface)](#client-controls-touchclick-interface)
+    - [Admin Controls (Web Interface)](#admin-controls-web-interface)
+  - [Firewall Warning](#firewall-warning)
+  - [📁 File Structure](#-file-structure)
+  - [⚙️ Configuration](#️-configuration)
+  - [Legal](#legal)
+    - [License](#license)
+    - [Legal Documents](#legal-documents)
+  - [🙏 Credits](#-credits)
 
 ---
 
 ## Requirements
+>
 > these are auto-installed with console.ps1/run.bat so you don't have it install it yourself
 
-* [Node.js](https://nodejs.org/) installed on your machine (v20.6.0+ required for config to work)
-* [Docker](https://www.docker.com/) installed on your machine if you're using Docker Compose Method
-* Follow of the [Hosting Methods](https://github.com/Lakunake/Sync-Player/blob/main/DOCS/Hosting%20Methods.md)
-* Media files placed in the `/media/` folder (supports MP3, MP4, .MKV, .AVI, .MOV, .WMV, .WEBM, .PNG, .JPG, .WEBP, embeds and more)
- 
+- [Node.js](https://nodejs.org/) installed on your machine (v20.6.0+ required for config to work)
+- [Docker](https://www.docker.com/) installed on your machine if you're using Docker Compose Method
+- Follow of the [Hosting Methods](https://github.com/Lakunake/Sync-Player/blob/main/DOCS/Hosting%20Methods.md)
+- Media files placed in the `/media/` folder (supports MP3, MP4, .MKV, .AVI, .MOV, .WMV, .WEBM, .PNG, .JPG, .WEBP, embeds and more)
+
 ---
 
 ## Features
 
-* Multi-format streaming mentioned above
-* High Quality streaming with FFmpeg optimization
-* Both Side Local Syncronized Stream ([BSL-S²](https://github.com/Lakunake/Minecraft-WebDisplays-Sync-Player/issues/35))
-* Playlist support with sequential playback
-* Admin control panel for remote management
-* Real-time playback synchronization using Socket.IO
-* Lightweight Node.js + Express server (excluding media tooling)
-* Custom video control zones  designed for the WebDisplays mod thats still usable in normal web browsers(click-based)
-* Automatic video preloading for smooth transitions
-* Dynamic Audio/Subtitle track changing supporting .ass([jassub](https://www.npmjs.com/package/jassub) and [wsr](https://www.npmjs.com/package/web-subtitle-renderer)) and .vtt(wsr), you can extract subs directly from admin panel
-* Minimal UI in view mode
-* Modernized UI with Glassmorphism in admin panel
-* Tab to use ffmpeg's provided tools without needing much knowledge of using CLI
-* HTTP/HTTPS switch
-* Improved safety in multiple measures [ⓘ](https://github.com/Lakunake/Minecraft-WebDisplays-Sync-Player/releases/tag/1.9.2) + [Helmet](https://www.npmjs.com/package/helmet) for safer Direct Hosting experience
-* [Join Behaviors](https://github.com/Lakunake/Minecraft-WebDisplays-Sync-Player/releases/tag/goonen); Sync, and Reset
-* Client Remembering
-* Machine fingerprint based locking
-* Server mode if you want to do simultaneous watch parties
-* A toggleable chat with proper escaping
-* A different look of the admin panel for mobile
-* Very easily configureable experience
+- Frame-perfect sync — play, pause, seek, and speed changes are broadcast to all viewers instantly
+- Both-Side Local Synchronized Stream ([BSL-S²](https://github.com/Lakunake/Minecraft-WebDisplays-Sync-Player/issues/35)) — if a viewer has the same file locally, they play it from their own disk in sync instead of streaming from the server
+- Multi-room server mode — run multiple independent watch party rooms simultaneously with a shared landing page
+- Playlist with sequential autoplay and automatic video preloading for smooth transitions
+- In-browser FFmpeg tools — remux, re-encode, extract audio and subtitle tracks, and generate thumbnails without touching the CLI
+- Dynamic audio and subtitle track switching — supports `.ass` (via [jassub](https://www.npmjs.com/package/jassub) or [wsr](https://www.npmjs.com/package/web-subtitle-renderer)) and `.vtt` mid-playback
+- Admin fingerprint lock — ties admin access to the first browser that connects, preventing unauthorized panel access
+- Join behaviors — choose whether new viewers sync to the current position or restart from the beginning
+- Client remembering — display names persist across reconnections
+- Configurable volume ceiling — let viewers boost volume well beyond 100%
+- Toggleable chat with server-side sanitization
+- HTTP/HTTPS support with self-signed cert generation scripts and Tailscale certificate auto-detection
+- Security hardened — CSRF protection, rate limiting, HTTP security headers via Helmet, and a honeypot on the FFmpeg auth endpoint
+- Responsive admin panel with a dedicated mobile layout and glassmorphism UI
+- Broad media support — MP4, MKV, AVI, MOV, WMV, WEBM, MP3, images, and embedded streams (YouTube, Twitch, Vimeo, SoundCloud, Dailymotion)
 
 ---
 
 ## Controls
 
-### Client Controls (Touch/Click Interface):
+### Client Controls (Touch/Click Interface)
+
 | Zone                                   | Action                   | Sync Behavior |
 | -------------------------------------- | ------------------------ | ------------- |
 | **Left Edge (≤ 87px)**                 | ⏪ Rewind 5 seconds       | ✅ Synced      |
@@ -75,28 +76,32 @@ There are also 2 chat commands called /fullscreen and /rename, they work as the 
 ![Controls](https://cdn.modrinth.com/data/N3CzASyr/images/dee2ac0695a18044f60e62bf75c5d3a94de57bd6.png "Visualised Controls (<3 comic sans)")
 > Of course use Left Click if you're not in minecraft while using this
 
-### Admin Controls (Web Interface):
+### Admin Controls (Web Interface)
+
 - Playlist creation and management
+
 - Remote play/pause/skip/seek controls to eliminate desync
+
 - Main video selection with custom start time
 - File browser for media management
 - FFmpeg generated thumbnail for video from the first third of the video
 - Tab to use various ffmpeg tools
 <img width="1919" height="943" alt="image" src="https://github.com/user-attachments/assets/2821e24d-b946-456b-bda7-30e540e0ba02" />
+
 <img width="1919" height="943" alt="image" src="https://github.com/user-attachments/assets/8b1eab02-70e3-4156-9594-059cf3ce46d7" />
 <img width="1866" height="918" alt="image" src="https://github.com/user-attachments/assets/f69bce7e-78a0-4be0-9c78-c43e018275df" />
 
-
 > [!NOTE]
->  All users will see the same video with the same attributes except for **volume**, which is controlled individually per client.
+> All users will see the same video with the same attributes except for **volume**, which is controlled individually per client.
 
 ---
 
 ## Firewall Warning
 
 By default, the `console.ps1` script will automatically:
-1.  Check if a Windows Firewall rule exists for your configured `PORT` (default 3000).
-2.  If missing, it will restart the script as Administrator to add the rule.
+
+1. Check if a Windows Firewall rule exists for your configured `PORT` (default 3000).
+2. If missing, it will restart the script as Administrator to add the rule.
 
 To **disable** this behavior (e.g., if you manage firewall rules manually), add the following to your `config.env`:
 
@@ -174,9 +179,9 @@ SYNC_SKIP_FIREWALL_CHECK=false     # See firewall warning above
 
 This project is licensed under **AGPLv3**:
 
-*  Free to use and modify
-*  Must credit the original creator (**Lakunake**)
-*  Must share any changes with the same license **if distributed or hosted publicly**
+- Free to use and modify
+- Must credit the original creator (**Lakunake**)
+- Must share any changes with the same license **if distributed or hosted publicly**
 
 See [LICENSE](LICENSE) for more details.
 
@@ -191,4 +196,4 @@ See [Documents Folder](DOCS) for [Privacy Policy](DOCS/PrivacyPolicy.md) and [Te
 Created by **Lakunake**
 Built using Node.js and many [node modules](res/package.json)
 
-Contact: johnwebdisplay@gmail.com        (Obviously not my real name)
+Contact: <johnwebdisplay@gmail.com>        (Obviously not my real name)
