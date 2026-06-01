@@ -45,7 +45,7 @@ A FULLY synchronized non-coder friendly HTML5 video player originally for Minecr
 - Both-Side Local Synchronized Stream ([BSL-S²](https://github.com/Lakunake/Minecraft-WebDisplays-Sync-Player/issues/35)) — if a viewer has the same file locally, they play it from their own disk in sync instead of streaming from the server
 - Multi-room server mode — run multiple independent watch party rooms simultaneously with a shared landing page
 - Playlist with sequential autoplay and automatic video preloading for smooth transitions
-- In-browser FFmpeg tools — remux, re-encode, extract audio and subtitle tracks, and generate thumbnails without touching the CLI
+- In-browser FFmpeg tools — remux, re-encode, extract audio and subtitle tracks, and generate thumbnails without touching the CLI (no wasm ran on server)
 - Dynamic audio and subtitle track switching — supports `.ass` (via [jassub](https://www.npmjs.com/package/jassub) or [wsr](https://www.npmjs.com/package/web-subtitle-renderer)) and `.vtt` mid-playback
 - Admin fingerprint lock — ties admin access to the first browser that connects, preventing unauthorized panel access
 - Join behaviors — choose whether new viewers sync to the current position or restart from the beginning
