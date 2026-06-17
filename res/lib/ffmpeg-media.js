@@ -10,9 +10,9 @@ const { getFFmpegBin } = require('./ffmpeg-tracks');
 const { getEncoders, setEncoders } = require('./memory');
 
 // node-av imports
-let HardwareContext, Demuxer, Muxer, Decoder, Encoder, FilterAPI;
+let HardwareContext, Demuxer, Muxer, Decoder, Encoder, FilterAPI, avApi;
 try {
-  const avApi = require('node-av/api');
+  avApi = require('node-av/api');
   HardwareContext = avApi.HardwareContext;
   Demuxer = avApi.Demuxer;
   Muxer = avApi.Muxer;
@@ -25,11 +25,10 @@ try {
 
 // Get video duration using node-av
 async function getVideoDuration(videoPath) {
-  let demuxer = null;
   try {
-    if (Demuxer) {
-      demuxer = await Demuxer.open(videoPath);
-      return demuxer.duration || 0;
+    if (avApi && avApi.probe) {
+      const info = await avApi.probe(videoPath);
+      return info.duration || 0;
     } else {
       return new Promise((resolve, reject) => {
         execFile('ffprobe', [
@@ -46,11 +45,9 @@ async function getVideoDuration(videoPath) {
         });
       });
     }
-  } catch (err) {
-    console.error(`Error getting duration for ${videoPath}:`, err.message);
+  } catch (e) {
+    console.error('Failed to get video duration:', e);
     return 0;
-  } finally {
-    if (demuxer) await demuxer.close();
   }
 }
 
@@ -217,7 +214,7 @@ async function generateAudioCoverArt(videoPath, thumbnailPath) {
 }
 
 async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFilename) {
-  if (!Demuxer || !Decoder || !Encoder || !FilterAPI || !Muxer) return false;
+  if (!Demuxer || !Decoder || !Encoder || !Muxer) return false;
 
   let input = null;
   let output = null;
@@ -253,47 +250,27 @@ async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFile
       }
     }
 
-    const decoder = await Decoder.create(videoStream);
-    output = await Muxer.open(thumbnailPath, { format: 'image2', update: '1' });
+    // v6: Use high-level Scaler to completely eliminate manual Encoder + Muxer + scaling logic
+    const srcW = videoStream.codecpar?.width || 1920;
+    const srcH = videoStream.codecpar?.height || 1080;
+    const targetHeight = Math.round(srcH * (width / srcW)) & ~1;
+    const targetWidth = width & ~1;
 
+    const decoder = await Decoder.create(videoStream);
+    const scaler = new avApi.Scaler();
+    
     const packetGen = input.packets(videoStream.index);
     const frameGen = decoder.frames(packetGen);
 
     let gotFrame = false;
-    let encoder = null;
-    let outStreamIdx = -1;
-
     for await (const frame of frameGen) {
-      if (!gotFrame) {
-        const filter = await FilterAPI.create(`scale=-2:${width},format=yuv420p`, {
-          width: frame.width, height: frame.height,
-          pixelFormat: frame.format, timeBase: videoStream.timeBase
-        });
-
-        const filteredFrames = await filter.processAll(frame);
-        for (const filteredFrame of filteredFrames) {
-          if (!encoder) {
-            const { FF_ENCODER_MJPEG } = require('node-av/constants');
-            encoder = await Encoder.create(FF_ENCODER_MJPEG, {
-              timeBase: { num: 1, den: 1 },
-              width: filteredFrame.width, height: filteredFrame.height,
-              pixelFormat: filteredFrame.format
-            });
-            outStreamIdx = output.addStream(encoder);
-          }
-          const packets = await encoder.encodeAll(filteredFrame);
-          for (const pkt of packets) await output.writePacket(pkt, outStreamIdx);
-        }
-
-        if (encoder) {
-          for await (const pkt of encoder.flushPackets()) await output.writePacket(pkt, outStreamIdx);
-        }
-        gotFrame = true;
-        break;
-      }
+      const jpegBuf = await scaler.toJpeg(frame, { resize: { width: targetWidth, height: targetHeight }, quality: 85 });
+      fs.writeFileSync(thumbnailPath, jpegBuf);
+      gotFrame = true;
+      break;
     }
-
-    if (output && typeof output.close === 'function') { await output.close(); output = null; }
+    
+    scaler.close();
 
     if (gotFrame) {
       try {

@@ -1,12 +1,13 @@
 {
   "name": "sync-player",
-  "version": "1.11.4",
+  "version": "12.0.0",
   "description": "Feature-Rich synchronized video player for multiple clients",
   "main": "server.js",
   "scripts": {
     "start": "node --env-file-if-exists=../config.env server.js",
     "dev": "node --watch --env-file-if-exists=../config.env server.js",
-    "postinstall": "node postinstall.js"
+    "postinstall": "node postinstall.js",
+    "audit": "node audit.js"
   },
   "author": "Lakunake",
   "license": "AGPL-3.0-or-later",
@@ -25,17 +26,23 @@
     "helmet": "^8.0.0",
     "ip": "^2.0.1",
     "jassub": "^2.4.1",
-    "node-av": "^5.2.1",
+    "node-av": "^6.0.0",
     "rate-limiter-flexible": "^9.0.1",
-    "socket.io": "^4.8.1",
-    "werift": "^0.22.4"
+    "socket.io": "^4.8.1"
   },
   "overrides": {
-    "werift-ice": {
-      "ip": ">=2.0.1"
+    "node-av": {
+      "werift": "$werift"
     }
   },
+  "optionalDependencies": {
+    "werift": "npm:empty-npm-package@1.0.0"
+  },
   "devDependencies": {
-    "esbuild": "^0.27.2"
+    "esbuild": "^0.28.1"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "node-av@6.0.0": true
   }
 }

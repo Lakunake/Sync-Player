@@ -1,173 +1,90 @@
 // memory.js — Unified persistent storage (admin fingerprint, client names, BSL matches)
-// Extracted from server.js to eliminate the monolith.
+// Migrated to node:sqlite database persistence for high concurrency.
 
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
-const { colors, ROOT_DIR, MEMORY_DIR } = require('./config');
-const { encryptData, decryptData, isEncrypted } = require('./security');
+const { colors } = require('./config');
+const { encryptData, decryptData } = require('./security');
+const db = require('./db');
 
-// ==================== Unified Memory Storage ====================
-// Admin fingerprint is encrypted, clientNames and bslMatches are plain JSON
-const MEMORY_FILE = path.join(MEMORY_DIR, 'memory.json');
-
-// Load unified memory
-// Format: { encrypted: "iv:authTag:ciphertext", clientNames: {}, bslMatches: {} }
-function loadMemory() {
-  try {
-    if (fs.existsSync(MEMORY_FILE)) {
-      const rawData = fs.readFileSync(MEMORY_FILE, 'utf8');
-
-      // Check if old fully-encrypted format (migration)
-      if (isEncrypted(rawData)) {
-        console.log(`${colors.yellow}Migrating from old encrypted format...${colors.reset}`);
-        const decrypted = decryptData(rawData);
-        const oldData = JSON.parse(decrypted);
-        // Migrate to new format
-        const newFormat = {
-          encrypted: oldData.adminFingerprint ? encryptData(oldData.adminFingerprint) : null,
-          clientNames: oldData.clientNames || {},
-          bslMatches: oldData.bslMatches || {}
-        };
-        saveMemory(newFormat);
-        console.log(`${colors.green}Migration complete${colors.reset}`);
-        return newFormat;
-      }
-
-      // New JSON format
-      const data = JSON.parse(rawData);
-      return {
-        encrypted: data.encrypted || null,
-        clientNames: data.clientNames || {},
-        bslMatches: data.bslMatches || {},
-        encoders: data.encoders || []
-      };
-    }
-
-    // Check for legacy admin fingerprint file and migrate
-    let encryptedFp = null;
-    if (fs.existsSync(path.join(ROOT_DIR, 'admin_fingerprint.txt'))) {
-      const adminFp = fs.readFileSync(path.join(ROOT_DIR, 'admin_fingerprint.txt'), 'utf8').trim();
-      encryptedFp = encryptData(adminFp);
-      console.log(`${colors.green}Migrated legacy admin fingerprint${colors.reset}`);
-    }
-
-    return { encrypted: encryptedFp, clientNames: {}, bslMatches: {}, encoders: [] };
-  } catch (error) {
-    console.error('Error loading memory:', error);
-  }
-  return { encrypted: null, clientNames: {}, bslMatches: {}, encoders: [] };
-}
-
-let memoryTimeout = null;
-
-// Save unified memory - encrypted field for admin fp, plain for rest
-function saveMemory(mem, immediate = false) {
-  if (immediate) {
-    if (memoryTimeout) {
-      clearTimeout(memoryTimeout);
-      memoryTimeout = null;
-    }
-    _writeMemoryToDisk(mem);
-    return;
-  }
-  
-  if (!memoryTimeout) {
-    memoryTimeout = setTimeout(() => {
-      memoryTimeout = null;
-      _writeMemoryToDisk(mem);
-    }, 500);
-  }
-}
-
-function _writeMemoryToDisk(mem) {
-  try {
-    const toSave = {
-      encrypted: mem.encrypted || null,
-      clientNames: mem.clientNames || {},
-      bslMatches: mem.bslMatches || {},
-      encoders: mem.encoders || []
-    };
-    fs.writeFile(MEMORY_FILE, JSON.stringify(toSave, null, 2), (error) => {
-      if (error) console.error('Error saving memory to disk:', error);
-    });
-  } catch (error) {
-    console.error('Error preparing memory for save:', error);
-  }
-}
-
-// Load memory at startup
-let memory = loadMemory();
-
-// Admin fingerprint accessors (encrypted)
+// Admin fingerprint accessors (encrypted in KV store)
 function getAdminFingerprint() {
-  if (!memory.encrypted) return null;
   try {
-    return decryptData(memory.encrypted);
-  } catch {
+    const row = db.prepare("SELECT value FROM kv_store WHERE key = 'admin_fingerprint'").get();
+    if (!row) return null;
+    return decryptData(row.value);
+  } catch (e) {
     return null;
   }
 }
 
 function setAdminFingerprint(fp) {
-  memory.encrypted = encryptData(fp);
-  saveMemory(memory);
-  // Log hashed fingerprint for security (don't expose raw fingerprint)
+  const encrypted = encryptData(fp);
+  db.prepare("INSERT OR REPLACE INTO kv_store (key, value) VALUES ('admin_fingerprint', ?)").run(encrypted);
   const hashedFp = crypto.createHash('sha256').update(fp).digest('hex').substring(0, 6);
   console.log(`${colors.green}Admin fingerprint registered: ${hashedFp}...${colors.reset}`);
 }
 
-// Client names accessors (plain, persisted)
-let clientDisplayNames = memory.clientNames || {};
-
+// Client names accessors
 function getClientNames() {
-  return clientDisplayNames;
+  const names = {};
+  const rows = db.prepare("SELECT client_id, name FROM client_names").all();
+  for (const row of rows) {
+    names[row.client_id] = row.name;
+  }
+  return names;
 }
 
 function setClientName(clientId, name) {
-  clientDisplayNames[clientId] = name;
-  memory.clientNames = clientDisplayNames;
-  saveMemory(memory);
+  db.prepare("INSERT OR REPLACE INTO client_names (client_id, name) VALUES (?, ?)").run(clientId, name);
 }
 
-// BSL matches accessors (plain, persisted)
-let persistentBslMatches = memory.bslMatches || {};
-
+// BSL matches accessors
 function getBslMatches() {
-  return persistentBslMatches;
+  const matches = {};
+  const rows = db.prepare("SELECT client_id, client_file, playlist_file FROM bsl_matches").all();
+  for (const row of rows) {
+    if (!matches[row.client_id]) matches[row.client_id] = {};
+    matches[row.client_id][row.client_file] = row.playlist_file;
+  }
+  return matches;
 }
 
 function setBslMatch(clientId, clientFileName, playlistFileName) {
-  if (!persistentBslMatches[clientId]) persistentBslMatches[clientId] = {};
-  persistentBslMatches[clientId][clientFileName] = playlistFileName;
-  memory.bslMatches = persistentBslMatches;
-  saveMemory(memory);
+  db.prepare("INSERT OR REPLACE INTO bsl_matches (client_id, client_file, playlist_file) VALUES (?, ?, ?)")
+    .run(clientId, clientFileName, playlistFileName);
 }
 
 // Encoders accessors
 function getEncoders() {
-  return memory.encoders || [];
+  try {
+    const row = db.prepare("SELECT value FROM kv_store WHERE key = 'encoders'").get();
+    if (!row) return [];
+    return JSON.parse(row.value);
+  } catch {
+    return [];
+  }
 }
 
 function setEncoders(encoders) {
-  memory.encoders = encoders;
-  saveMemory(memory);
+  db.prepare("INSERT OR REPLACE INTO kv_store (key, value) VALUES ('encoders', ?)").run(JSON.stringify(encoders));
 }
 
 // Re-expose mutable references so server.js can refresh its local copies
+// SQLite handles state, but server.js caches these.
+let clientDisplayNames = getClientNames();
+let persistentBslMatches = getBslMatches();
+
 function refreshClientDisplayNames() {
-  clientDisplayNames = memory.clientNames || {};
+  clientDisplayNames = getClientNames();
   return clientDisplayNames;
 }
 
 function refreshPersistentBslMatches() {
-  persistentBslMatches = memory.bslMatches || {};
+  persistentBslMatches = getBslMatches();
   return persistentBslMatches;
 }
 
 module.exports = {
-  loadMemory,
-  saveMemory,
   getAdminFingerprint,
   setAdminFingerprint,
   getClientNames,

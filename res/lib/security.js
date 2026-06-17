@@ -9,6 +9,8 @@ const {
   FFMPEG_TOOLS_PASSWORD, FFMPEG_DISABLE_BAN, FFMPEG_DISABLE_CONSEQUENCES
 } = require('./config');
 
+const db = require('./db');
+
 // ==================== Ban System (Honeypot) ====================
 const bannedIpHashes = new Set();
 
@@ -16,70 +18,31 @@ function hashValue(val) {
   return crypto.createHash('sha256').update(String(val)).digest('hex');
 }
 
-function loadBans() {
-  try {
-    if (fs.existsSync(BAN_FILE)) {
-      const data = JSON.parse(fs.readFileSync(BAN_FILE, 'utf8'));
-      if (data.bans && Array.isArray(data.bans)) {
-        data.bans.forEach(b => bannedIpHashes.add(b.h));
-      }
-    }
-  } catch (e) { /* silent */ }
-}
-
-function saveBans() {
-  try {
-    const bans = [];
-    // Read existing file to preserve full entries
-    if (fs.existsSync(BAN_FILE)) {
-      const data = JSON.parse(fs.readFileSync(BAN_FILE, 'utf8'));
-      if (data.bans) bans.push(...data.bans);
-    }
-    fs.writeFile(BAN_FILE, JSON.stringify({ bans }, null, 2), (err) => {
-      if (err) console.error('Error saving bans:', err);
-    });
-  } catch (e) { /* silent */ }
-}
+// Load bans into memory cache at startup from SQLite
+try {
+  const rows = db.prepare("SELECT ip_hash FROM bans").all();
+  for (const row of rows) {
+    bannedIpHashes.add(row.ip_hash);
+  }
+} catch (e) { /* silent */ }
 
 function banIp(ip, userAgent) {
   const hIp = hashValue(ip);
   if (bannedIpHashes.has(hIp)) return; // Already banned
   bannedIpHashes.add(hIp);
-  // Append hashed entry to ban.json ONLY if persistent bans are enabled
+  
+  // Append hashed entry to SQLite ONLY if persistent bans are enabled
   if (!FFMPEG_DISABLE_BAN) {
     try {
-      let bans = [];
-      if (fs.existsSync(BAN_FILE)) {
-        const data = JSON.parse(fs.readFileSync(BAN_FILE, 'utf8'));
-        if (data.bans) bans = data.bans;
-      }
-      bans.push({
-        h: hIp,
-        u: hashValue(userAgent || 'unknown'),
-        t: new Date().toISOString(),
-        r: 'ffmpeg_auth_fail'
-      });
-      fs.writeFile(BAN_FILE, JSON.stringify({ bans }, null, 2), (err) => {
-        if (err) console.error('Error writing ban file:', err);
-      });
+      db.prepare("INSERT OR IGNORE INTO bans (ip_hash, ua_hash, time, reason) VALUES (?, ?, ?, ?)")
+        .run(hIp, hashValue(userAgent || 'unknown'), new Date().toISOString(), 'ffmpeg_auth_fail');
     } catch (e) { /* silent */ }
   }
 
-  // Append plaintext credentials to ban-creds.json (WRITE-ONLY — server never reads this)
+  // Append plaintext credentials to ban_creds table (WRITE-ONLY)
   try {
-    let creds = [];
-    if (fs.existsSync(BAN_CREDS_FILE)) {
-      creds = JSON.parse(fs.readFileSync(BAN_CREDS_FILE, 'utf8'));
-    }
-    creds.push({
-      ip: ip,
-      userAgent: userAgent || 'unknown',
-      timestamp: new Date().toISOString(),
-      reason: 'ffmpeg_auth_fail'
-    });
-    fs.writeFile(BAN_CREDS_FILE, JSON.stringify(creds, null, 2), (err) => {
-      if (err) console.error('Error writing ban creds:', err);
-    });
+    db.prepare("INSERT INTO ban_creds (ip, user_agent, timestamp, reason) VALUES (?, ?, ?, ?)")
+      .run(ip, userAgent || 'unknown', new Date().toISOString(), 'ffmpeg_auth_fail');
   } catch (e) { /* silent */ }
 }
 
@@ -100,9 +63,6 @@ function flashTaskbar() {
     process.stdout.write('\x1b]9;4;0;0\x07');
   }, 5000);
 }
-
-// Load bans at startup
-loadBans();
 
 // ==================== Encryption ====================
 const KEY_FILE = path.join(MEMORY_DIR, '.key');
@@ -302,8 +262,6 @@ function createFfmpegAuthHandler() {
 module.exports = {
   bannedIpHashes,
   hashValue,
-  loadBans,
-  saveBans,
   banIp,
   isIpBanned,
   flashTaskbar,

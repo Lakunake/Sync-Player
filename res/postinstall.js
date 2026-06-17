@@ -35,7 +35,7 @@ const ORIGINAL_IS_PUBLIC = 'ip.isPublic = function (addr) {\n  return !ip.isPriv
 function applyIpPatch() {
   if (!fs.existsSync(IP_LIB_PATH)) {
     console.log('[postinstall] ip library not found, skipping patch.');
-    return;
+    return false;
   }
 
   let content = fs.readFileSync(IP_LIB_PATH, 'utf-8');
@@ -43,17 +43,28 @@ function applyIpPatch() {
   // Check if already patched
   if (content.includes('GHSA-2p57-rm9w-gvfp')) {
     console.log('[postinstall] ip library already patched.');
-    return;
+    return true;
   }
 
   // Apply patch
   if (content.includes(ORIGINAL_IS_PUBLIC)) {
     content = content.replace(ORIGINAL_IS_PUBLIC, PATCHED_IS_PUBLIC);
     fs.writeFileSync(IP_LIB_PATH, content, 'utf-8');
-    console.log('[postinstall] ✓ Applied security patch to ip library (GHSA-2p57-rm9w-gvfp), the 4 audit errors are now a false positive.');
+    console.log('[postinstall] ✓ Applied security patch to ip library (GHSA-2p57-rm9w-gvfp)');
+    return true;
   } else {
     console.warn('[postinstall] ⚠ Could not find original isPublic function to patch. Manual review required.');
+    return false;
   }
+}
+
+// Writes a JSON file listing advisories that have been patched at runtime.
+// The custom `npm run audit` script reads this to filter false positives.
+function writePatchedAdvisories(patched) {
+  const advisoryFile = path.join(__dirname, '.patched-advisories.json');
+  try {
+    fs.writeFileSync(advisoryFile, JSON.stringify({ patched }, null, 2), 'utf-8');
+  } catch (_) { }
 }
 
 // ==================== JASSUB Bundling ====================
@@ -138,7 +149,15 @@ async function bundleJassub() {
 
 // Run all postinstall tasks
 async function main() {
-  applyIpPatch();
+  const patchedAdvisories = [];
+
+  const ipPatched = applyIpPatch();
+  if (ipPatched) {
+    patchedAdvisories.push('GHSA-2p57-rm9w-gvfp');
+  }
+
+  writePatchedAdvisories(patchedAdvisories);
+
   await bundleJassub();
 }
 

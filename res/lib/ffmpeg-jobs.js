@@ -145,7 +145,8 @@ async function runFfmpegJob(jobId, type, params) {
       const encoder = await Encoder.create(safeEncoder, {
         decoder,
         bitRate: bitrate,
-        timeBase: videoStream.timeBase
+        timeBase: videoStream.timeBase,
+        autoFormat: true
       });
 
       const outStreamIdx = muxer.addStream(encoder);
