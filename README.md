@@ -33,29 +33,29 @@ A FULLY synchronized non-coder friendly HTML5 video player originally for Minecr
 > these are auto-installed with console.ps1/run.bat so you don't have it install it yourself
 
 - [Node.js](https://nodejs.org/) installed on your machine (v20.6.0+ required for config to work)
-- [Docker](https://www.docker.com/) installed on your machine if you're using Docker Compose Method
-- Follow of the [Hosting Methods](https://github.com/Lakunake/Sync-Player/blob/main/DOCS/Hosting%20Methods.md)
+- Follow [Hosting Methods](https://github.com/Lakunake/Sync-Player/blob/main/DOCS/Hosting%20Methods.md)
 - Media files placed in the `/media/` folder (supports MP3, MP4, .MKV, .AVI, .MOV, .WMV, .WEBM, .PNG, .JPG, .WEBP, embeds and more)
+> [Docker](https://www.docker.com/) installed on your machine if you're using Docker Compose Method
 
 ---
 
 ## Features
 
-- Frame-perfect sync — play, pause, seek, and speed changes are broadcast to all viewers instantly
-- Both-Side Local Synchronized Stream ([BSL-S²](https://github.com/Lakunake/Minecraft-WebDisplays-Sync-Player/issues/35)) — if a viewer has the same file locally, they play it from their own disk in sync instead of streaming from the server
-- Multi-room server mode — run multiple independent watch party rooms simultaneously with a shared landing page
+- Frame-perfect sync; play, pause, seek, and speed changes are broadcast to all viewers instantly
+- Both-Side Local Synchronized Stream ([BSL-S²](https://github.com/Lakunake/Minecraft-WebDisplays-Sync-Player/issues/35)); if a viewer has the same file locally, they play it from their own disk in sync instead of streaming from the server
+- Multi-room server mode; run multiple independent watch party rooms simultaneously with a shared landing page
 - Playlist with sequential autoplay and automatic video preloading for smooth transitions
-- In-browser FFmpeg tools — remux, re-encode, extract audio and subtitle tracks, and generate thumbnails without touching the CLI
-- Dynamic audio and subtitle track switching — supports `.ass` (via [jassub](https://www.npmjs.com/package/jassub) or [wsr](https://www.npmjs.com/package/web-subtitle-renderer)) and `.vtt` mid-playback
-- Admin fingerprint lock — ties admin access to the first browser that connects, preventing unauthorized panel access
-- Join behaviors — choose whether new viewers sync to the current position or restart from the beginning
-- Client remembering — display names persist across reconnections
-- Configurable volume ceiling — let viewers boost volume well beyond 100%
+- In-browser FFmpeg tools; remux, re-encode, extract audio and subtitle tracks, and generate thumbnails without touching the CLI (ran on server)
+- Dynamic audio and subtitle track switching; supports `.ass` (via [jassub](https://www.npmjs.com/package/jassub) or [wsr](https://www.npmjs.com/package/web-subtitle-renderer)) and `.vtt` mid-playback
+- Admin fingerprint lock; ties admin access to the first browser that connects, preventing unauthorized panel access
+- Join behaviors; choose whether new viewers sync to the current position or restart from the beginning
+- Display names that persist across reconnections
+- Configurable volume ceiling; let viewers boost volume well beyond 100%
 - Toggleable chat with server-side sanitization
 - HTTP/HTTPS support with self-signed cert generation scripts and Tailscale certificate auto-detection
-- Security hardened — CSRF protection, rate limiting, HTTP security headers via Helmet, and a honeypot on the FFmpeg auth endpoint
+- CSRF protection, rate limiting, HTTP security headers via Helmet, and a honeypot on the FFmpeg auth endpoint
 - Responsive admin panel with a dedicated mobile layout and glassmorphism UI
-- Broad media support — MP4, MKV, AVI, MOV, WMV, WEBM, MP3, images, and embedded streams (YouTube, Twitch, Vimeo, SoundCloud, Dailymotion)
+- Broad media support — MP4, MKV, AVI, MOV, WMV, WEBM, MP3, images, and embedded streams (YouTube, Twitch, Vimeo, SoundCloud, Dailymotion, etc.)
 
 ---
 
