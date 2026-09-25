@@ -3,6 +3,7 @@
 > The list below is sorted in safety order with the lower number being safer.
 
 ### Method 1: Tailscale (Virtual LAN)
+> Intended
 
 > [!IMPORTANT]
 > Beware, Tailscale only allows 3 emails per [Tailnet](https://tailscale.com/kb/1136/tailnet), but it allows a 100 devices to be connected at the same time, so it would be best if you created a new email for your friends to log into tailscale to just for this
