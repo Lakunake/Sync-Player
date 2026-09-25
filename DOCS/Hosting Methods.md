@@ -12,7 +12,10 @@
 
 1. Download and install [Tailscale](https://tailscale.com/download) on everybody's computers
 2. Invite your friends to your [Tailnet](https://tailscale.com/kb/1136/tailnet)
-3. Run `run.bat`, then visit the provided network link
+3. Turn on `HTTPS` setting for your Tailnet
+4. Generate a Tailscale Certificate using the provided script in /cert
+5. Ensure everyone is connected to the Tailnet
+6. Run `run.bat` or `start.sh`, then visit the provided network link
 
 ### Method 2: Cloud Hosting (Render, Heroku, Replit, etc.)
   
