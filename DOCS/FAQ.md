@@ -115,6 +115,10 @@ Yes! It works in any modern web browser. While designed for the WebDisplays mod,
 
 **No.** Your files, logs, and playback history stay on your machine. No data is sent to us or any third party.
 
+**Is the Project Abandoned?**
+
+**No.** Because that I am still a student, I just have less and less time to work on this project with each day that passed. I try to update it whenever I can but I always face some problem whether it be time, work or technical related.
+
 ---
 
 *Still have questions? Visit [GitHub Discussions](https://github.com/Lakunake/Minecraft-WebDisplays-Video-Player/discussions) or contact the support email.*
