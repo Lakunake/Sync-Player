@@ -2,7 +2,7 @@
 
 A FULLY synchronized non-coder friendly HTML5 video player originally for Minecraft's WebDisplays mod using Node.js and Socket.IO. This project allows all players to view the same video in perfect sync including play, pause, and seek actions and more across connected clients.
 
-> Frequently Asked Questions: [FAQ](FAQ.md)
+> Frequently Asked Questions: [FAQ](DOCS/FAQ.md)
 
 ### [Read Hosting Methods Here!!](https://github.com/Lakunake/Sync-Player/blob/main/DOCS/Hosting%20Methods.md)
 
