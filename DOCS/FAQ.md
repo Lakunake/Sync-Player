@@ -61,13 +61,19 @@ This happens because the default SSL certificate is **self-signed**.
 
 ## Playback & Codecs
 
+**My video is not listed in the "Available Files" section**
+
+Rename your video into something more basic like `hey.mp4` (of course don't change the file extension)
+
+The server does not accept the filenames it finds suspicious of being a malicious code injection due to security reasons.
+
 **My video doesn't load / I can hear audio but see no video**
 
 This is usually a **Codec Issue**.
 *   **The Problem**: Web browsers (Chrome, Edge, MCF) **cannot play** H.265 (HEVC) or MKV files natively.
 *   **The Solutions**:
     1.  **Use BSL-S² (Recommended)**: This feature syncs a file playing locally on your PC (VLC/MPV) with the room. It supports **any** format.
-    2.  **Re-encode**: Use HandBrake to convert the video to **H.264 (AVC) MP4**.
+    2.  **Re-encode**: Use HandBrake or ffmpeg tools tab to convert the video to **H.264 (AVC) MP4**.
     3.  **Hardware Acceleration**: In rare cases, enabling it in `chrome://settings/system` might help if your GPU supports it.
 
 **Subtitle/Audio track changing does not work**
