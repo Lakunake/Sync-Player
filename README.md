@@ -1,6 +1,6 @@
 # Sync-Player
 
-A FULLY synchronized non-coder friendly HTML5 video player originally for Minecraft's WebDisplays mod using Node.js and Socket.IO. This project allows all players to view the same video in perfect sync including play, pause, and seek actions and more across connected clients.
+A FULLY synchronized, non-coder-friendly HTML5 video player, originally built for Minecraft's WebDisplays mod, running on Node.js and Socket.IO. Every connected client stays perfectly in sync; play, pause, seek, and more all mirror instantly across all players packaged with the ability to play licensed/HEVC codecs and heavy, 4k videos using little to no bandwith at all using ([BSL-S²](https://github.com/Lakunake/Minecraft-WebDisplays-Sync-Player/issues/35)).
 
 > Frequently Asked Questions: [FAQ](DOCS/FAQ.md)
 
