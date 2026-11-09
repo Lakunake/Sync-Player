@@ -16,7 +16,6 @@
     "url": "https://github.com/Lakunake/Sync-Player"
   },
   "engines": {
-    "node": ">=20.6.0"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",

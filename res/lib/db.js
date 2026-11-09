@@ -1,7 +1,14 @@
 // db.js — SQLite connection and database initialization
-// Uses Node 22.5+ native node:sqlite for zero-dependency high-performance persistence
+// Uses Node 22.13+ built-in node:sqlite (unflagged since 22.13.0) for zero-dependency persistence
 
-const { DatabaseSync } = require('node:sqlite');
+let DatabaseSync;
+try {
+  ({ DatabaseSync } = require('node:sqlite'));
+} catch (err) {
+  console.error(`\x1b[31m[ERROR] Built-in SQLite (node:sqlite) is not available on Node.js ${process.version}.`);
+  console.error(`        Sync-Player requires Node.js v22.13.0 or newer: https://nodejs.org/\x1b[0m`);
+  process.exit(1);
+}
 const fs = require('fs');
 const path = require('path');
 const { colors, MEMORY_DIR } = require('./config');

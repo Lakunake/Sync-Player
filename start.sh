@@ -69,6 +69,11 @@ if ! command -v node &> /dev/null; then
     read -p "Press Enter to continue after installing Node.js, or Ctrl+C to exit..."
 fi
 
+if ! node -e "const [maj,min]=process.versions.node.split('.').map(Number);process.exit(maj>22||(maj===22&&min>=13)?0:1)" 2>/dev/null; then
+    write_status "WARNING" "Node.js $(node -v 2>/dev/null) is too old (v22.13.0+ required for built-in SQLite)."
+    echo -e "Please update Node.js from: \033[36mhttps://nodejs.org/\033[0m"
+fi
+
 # =================================================================
 # Initialize configuration (in root directory)
 # =================================================================

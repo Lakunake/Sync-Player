@@ -98,6 +98,12 @@ if (-not $nodeInstalled) {
     }
 }
 
+$nodeVersionRaw = (& node -v 2>$null) -replace '^v', ''
+if ($nodeVersionRaw -and ([version]$nodeVersionRaw -lt [version]"22.13.0")) {
+    Write-Status "WARNING" "Node.js v$nodeVersionRaw is too old (v22.13.0+ required for built-in SQLite)."
+    Write-Host "Update with: winget upgrade --id OpenJS.NodeJS.LTS -e   or from https://nodejs.org/" -ForegroundColor Cyan
+}
+
 # =================================================================
 # Initialize configuration (in root directory)
 # =================================================================
