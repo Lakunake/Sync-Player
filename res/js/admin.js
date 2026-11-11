@@ -1,6 +1,9 @@
 const socket = io();
 let playlist = [];
 let allMediaFiles = []; // Full media file list (persists across playlist launches)
+const selectedMediaFiles = new Set();
+let isAddingSelectedFiles = false;
+let isLoadingAvailableFiles = false;
 let mainVideoIndex = -1;
 let skipSeconds = 5;
 let skipIntroSeconds = 90;
@@ -35,6 +38,10 @@ function escapeHTML(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+function getMediaUrl(filename) {
+  return `/media/${filename.split('/').map(encodeURIComponent).join('/')}`;
 }
 
 // CSRF Token Management
@@ -499,32 +506,46 @@ function initNavIndicator() {
 }
 
 // Fetch available files from server
-async function loadFiles() {
-  // Check for hydrated data from server (saves a round-trip)
-  if (window.INITIAL_DATA && window.INITIAL_DATA.files) {
-    displayFiles(window.INITIAL_DATA.files);
-    // Also hydrate playlist if available
-    if (window.INITIAL_DATA.playlist) {
-      playlist = window.INITIAL_DATA.playlist;
-      mainVideoIndex = window.INITIAL_DATA.currentVideoIndex ?? -1;
-      updatePlaylistDisplay();
-      updateDashboardStats();
-      if (typeof refreshFfmpegFileList === 'function') refreshFfmpegFileList();
-    }
-    // Important: clear it so we don't re-use stale data if we manually refresh parts
-    // and delete it to save memory
-    // delete window.INITIAL_DATA; 
-    return;
+async function loadFiles(forceRefresh = false) {
+  if (isLoadingAvailableFiles) return;
+  isLoadingAvailableFiles = true;
+  const refreshButton = document.getElementById('refresh-files-btn');
+  if (refreshButton) {
+    refreshButton.disabled = true;
+    refreshButton.classList.add('is-loading');
+    refreshButton.setAttribute('aria-busy', 'true');
   }
 
   try {
-    const response = await fetch('/api/files');
+    // Check for hydrated data from server (saves a round-trip)
+    if (!forceRefresh && window.INITIAL_DATA && window.INITIAL_DATA.files) {
+      displayFiles(window.INITIAL_DATA.files);
+      // Also hydrate playlist if available
+      if (window.INITIAL_DATA.playlist) {
+        playlist = window.INITIAL_DATA.playlist;
+        mainVideoIndex = window.INITIAL_DATA.currentVideoIndex ?? -1;
+        updatePlaylistDisplay();
+        updateDashboardStats();
+        if (typeof refreshFfmpegFileList === 'function') refreshFfmpegFileList();
+      }
+      return;
+    }
+
+    const response = await fetch(forceRefresh ? '/api/files?refresh=1' : '/api/files');
+    if (!response.ok) throw new Error(`Server returned ${response.status}`);
     const files = await response.json();
     displayFiles(files);
   } catch (error) {
     console.error('Error loading files:', error);
     document.getElementById('file-browser').innerHTML =
       '<div class="empty-message">Error loading files. Check server connection.</div>';
+  } finally {
+    isLoadingAvailableFiles = false;
+    if (refreshButton) {
+      refreshButton.disabled = false;
+      refreshButton.classList.remove('is-loading');
+      refreshButton.removeAttribute('aria-busy');
+    }
   }
 }
 
@@ -532,7 +553,12 @@ async function loadFiles() {
 function displayFiles(files) {
   // Store the full file list for use in track tools and other dropdowns
   allMediaFiles = files;
+  const availableFilenames = new Set(files.map(file => file.filename));
+  selectedMediaFiles.forEach(filename => {
+    if (!availableFilenames.has(filename)) selectedMediaFiles.delete(filename);
+  });
   const fileBrowser = dom.fileBrowser || document.getElementById('file-browser');
+  const fileTree = { folders: new Map(), files: [] };
 
   // Trigger FFmpeg and Track Tool dropdown refreshes
   if (typeof refreshFfmpegFileList === 'function') {
@@ -540,36 +566,130 @@ function displayFiles(files) {
   }
 
   if (files.length === 0) {
-    fileBrowser.innerHTML = '<div class="empty-message">No media files found in videos folder</div>';
+    fileBrowser.innerHTML = '<div class="empty-message">No media files found in media folder</div>';
+    selectedMediaFiles.clear();
+    updateAddSelectedButton();
     return;
   }
 
-  const fragment = document.createDocumentFragment();
-
   files.forEach((file) => {
-    const fileItem = document.createElement('div');
-    fileItem.className = 'file-item';
-
-    const fileName = document.createElement('span');
-    fileName.className = 'file-name';
-    fileName.innerHTML = `<span class="file-icon">🎬</span> ${file.escapedFilename || escapeHTML(file.filename)}`;
-
-    if (file.filename.endsWith('.mkv')) {
-      fileName.innerHTML += ' <span style="color: #FF9800;">⚠️</span>';
-    }
-
-    const addBtn = document.createElement('button');
-    addBtn.className = 'btn btn-sm btn-primary';
-    addBtn.textContent = '+ Add';
-    addBtn.onclick = () => addToPlaylist(file);
-
-    fileItem.appendChild(fileName);
-    fileItem.appendChild(addBtn);
-    fragment.appendChild(fileItem);
+    const segments = file.filename.split('/');
+    let node = fileTree;
+    segments.slice(0, -1).forEach((folderName) => {
+      if (!node.folders.has(folderName)) {
+        node.folders.set(folderName, { folders: new Map(), files: [] });
+      }
+      node = node.folders.get(folderName);
+    });
+    node.files.push(file);
   });
 
-  fileBrowser.innerHTML = '';
-  fileBrowser.appendChild(fragment);
+  const renderTree = (node) => {
+    const fragment = document.createDocumentFragment();
+
+    [...node.folders.keys()].sort((a, b) => a.localeCompare(b)).forEach((folderName) => {
+      const folder = document.createElement('div');
+      folder.className = 'media-folder';
+
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'media-folder-name';
+      toggle.textContent = `📁 ${folderName}`;
+      toggle.setAttribute('aria-expanded', 'false');
+      folder.appendChild(toggle);
+
+      const contents = document.createElement('div');
+      contents.className = 'media-folder-contents';
+      const innerContents = document.createElement('div');
+      innerContents.className = 'media-folder-inner';
+      innerContents.appendChild(renderTree(node.folders.get(folderName)));
+      contents.appendChild(innerContents);
+      folder.appendChild(contents);
+      toggle.addEventListener('click', () => {
+        const isOpen = folder.classList.toggle('is-open');
+        toggle.setAttribute('aria-expanded', String(isOpen));
+      });
+      fragment.appendChild(folder);
+    });
+
+    node.files.sort((a, b) => a.filename.localeCompare(b.filename)).forEach((file) => {
+      const fileItem = document.createElement('div');
+      fileItem.className = 'file-item';
+
+      const label = document.createElement('label');
+      label.className = 'file-name media-file-label';
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = selectedMediaFiles.has(file.filename);
+      checkbox.setAttribute('aria-label', `Select ${file.filename}`);
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked) selectedMediaFiles.add(file.filename);
+        else selectedMediaFiles.delete(file.filename);
+        updateAddSelectedButton();
+      });
+
+      const icon = document.createElement('span');
+      icon.className = 'file-icon';
+      icon.textContent = '🎬';
+
+      const name = document.createElement('span');
+      name.className = 'media-file-name';
+      name.textContent = file.filename.split('/').pop();
+
+      label.append(checkbox, icon, name);
+
+      if (file.filename.toLowerCase().endsWith('.mkv')) {
+        const warning = document.createElement('span');
+        warning.className = 'media-file-warning';
+        warning.textContent = '⚠️';
+        warning.title = 'MKV may require compatible playback support';
+        label.appendChild(warning);
+      }
+
+      const addBtn = document.createElement('button');
+      addBtn.className = 'btn btn-sm btn-primary';
+      addBtn.textContent = '+ Add';
+      addBtn.onclick = () => addToPlaylist(file);
+
+      fileItem.append(label, addBtn);
+      fragment.appendChild(fileItem);
+    });
+
+    return fragment;
+  };
+
+  fileBrowser.replaceChildren(renderTree(fileTree));
+  updateAddSelectedButton();
+}
+
+function updateAddSelectedButton() {
+  const button = document.getElementById('add-selected-btn');
+  if (!button) return;
+  button.disabled = isAddingSelectedFiles || selectedMediaFiles.size === 0;
+  button.textContent = isAddingSelectedFiles ? 'Adding...' : `Add selected (${selectedMediaFiles.size})`;
+}
+
+async function addSelectedToPlaylist() {
+  if (isAddingSelectedFiles) return;
+  const selectedFiles = allMediaFiles.filter(file => selectedMediaFiles.has(file.filename));
+  isAddingSelectedFiles = true;
+  updateAddSelectedButton();
+  const fileControls = document.querySelectorAll('#file-browser input[type="checkbox"], #file-browser .file-item > button');
+  fileControls.forEach(control => { control.disabled = true; });
+  try {
+    for (const file of selectedFiles) {
+      await addToPlaylist(file);
+    }
+    selectedMediaFiles.clear();
+    document.querySelectorAll('#file-browser input[type="checkbox"]').forEach((checkbox) => {
+      checkbox.checked = false;
+    });
+  } finally {
+    isAddingSelectedFiles = false;
+    fileControls.forEach(control => { control.disabled = false; });
+    updateAddSelectedButton();
+  }
 }
 
 // Add a file to the playlist
@@ -577,7 +697,7 @@ async function addToPlaylist(file) {
   if (!playlist.some(item => item.filename === file.filename)) {
     const fileCopy = { ...file };
 
-    if (fileCopy.filename.endsWith('.mkv') || fileCopy.filename.endsWith('.mp4')) {
+    if (fileCopy.filename.toLowerCase().endsWith('.mkv') || fileCopy.filename.toLowerCase().endsWith('.mp4')) {
       try {
         const response = await fetch(`/api/tracks/${encodeURIComponent(fileCopy.filename)}`);
         if (response.ok) {
@@ -592,11 +712,13 @@ async function addToPlaylist(file) {
       } catch (error) {
         fileCopy.tracks = { audio: [], subtitles: [] };
       }
-    } else {
+    }
+
+    if (!fileCopy.tracks) {
       fileCopy.tracks = { audio: [], subtitles: [] };
     }
 
-    if (fileCopy.filename.endsWith('.mkv')) {
+    if (fileCopy.filename.toLowerCase().endsWith('.mkv')) {
       fileCopy.usesHEVC = true;
     }
 
@@ -608,7 +730,9 @@ async function addToPlaylist(file) {
     if (typeof refreshFfmpegFileList === 'function') refreshFfmpegFileList();
     // Clear the isNew flag after animation
     setTimeout(() => { fileCopy.isNew = false; }, 300);
+    return true;
   }
+  return false;
 }
 
 // Remove a file from the playlist
@@ -646,6 +770,17 @@ function removeFromPlaylist(index) {
     updateDashboardStats();
     if (typeof refreshFfmpegFileList === 'function') refreshFfmpegFileList();
   }
+}
+
+function clearMediaPlaylist() {
+  if (playlist.length === 0) return;
+
+  playlist = [];
+  mainVideoIndex = -1;
+  updatePlaylistDisplay();
+  updateHevcWarning();
+  updateDashboardStats();
+  if (typeof refreshFfmpegFileList === 'function') refreshFfmpegFileList();
 }
 
 // Move playlist item
@@ -750,7 +885,7 @@ function updatePlaylistDisplay() {
     const isImage = ['.png', '.jpg', '.jpeg', '.webp', '.gif'].some(ext => item.filename.toLowerCase().endsWith(ext));
 
     if (isImage) {
-      thumbnailBg.style.backgroundImage = `url('/media/${encodeURIComponent(item.filename)}')`;
+      thumbnailBg.style.backgroundImage = `url('${getMediaUrl(item.filename)}')`;
       thumbnailBg.classList.add('cached', 'loaded');
       thumbnailBg.classList.remove('themed');
       playlistItem.style.color = '';
@@ -1133,32 +1268,35 @@ function renderRemotePlaylistSidebar() {
     thumbnailBg.className = 'thumbnail-bg';
     item.appendChild(thumbnailBg);
 
-    const platformIcon = applyPlatformTheme(thumbnailBg, video);
+    const platformInfo = applyPlatformTheme(thumbnailBg, video);
 
     const iconFallback = document.createElement('div');
     iconFallback.className = 'thumbnail-icon-fallback';
-    iconFallback.textContent = platformIcon;
+    iconFallback.textContent = platformInfo.icon || '🎬';
     iconFallback.style.cssText = 'position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); font-size:24px; z-index:1;';
     thumbnailBg.appendChild(iconFallback);
 
     const isImage = ['.png', '.jpg', '.jpeg', '.webp', '.gif'].some(ext => video.filename.toLowerCase().endsWith(ext));
 
     if (isImage) {
-      thumbnailBg.style.backgroundImage = `url('/media/${encodeURIComponent(video.filename)}')`;
+      thumbnailBg.style.backgroundImage = `url('${getMediaUrl(video.filename)}')`;
       thumbnailBg.classList.add('cached', 'loaded');
       thumbnailBg.classList.remove('themed');
+      iconFallback.style.display = 'none';
       item.style.color = '';
     }
     else if (video.thumbnail && typeof video.thumbnail === 'string') {
       thumbnailBg.style.backgroundImage = `url('${video.thumbnail}')`;
       thumbnailBg.classList.add('cached', 'loaded');
       thumbnailBg.classList.remove('themed');
+      iconFallback.style.display = 'none';
       item.style.color = '';
     }
     else if (thumbnailCache[video.filename]) {
       thumbnailBg.style.backgroundImage = `url('${thumbnailCache[video.filename]}')`;
       thumbnailBg.classList.add('cached', 'loaded');
       thumbnailBg.classList.remove('themed');
+      iconFallback.style.display = 'none';
       item.style.color = '';
     }
     else if (!video.isYouTube && !video.isExternal) {
@@ -1170,6 +1308,7 @@ function renderRemotePlaylistSidebar() {
             thumbnailBg.style.backgroundImage = `url('${data.thumbnail}')`;
             thumbnailBg.classList.add('loaded');
             thumbnailBg.classList.remove('themed');
+            iconFallback.style.display = 'none';
             item.style.color = '';
           }
         })
@@ -1272,7 +1411,7 @@ function renderRemoteTrackControls() {
 
   if (isImage) {
     // Image files are their own thumbnails
-    thumbnailEl.style.backgroundImage = `url('/media/${encodeURIComponent(videoInfo.filename)}')`;
+    thumbnailEl.style.backgroundImage = `url('${getMediaUrl(videoInfo.filename)}')`;
     thumbnailEl.style.backgroundSize = 'cover';
     thumbnailEl.style.backgroundPosition = 'center';
     thumbnailEl.classList.remove('themed');
@@ -3061,4 +3200,3 @@ async function submitTrackToolJob(options) {
 document.addEventListener('DOMContentLoaded', initSubtitleTools);
 
 window.runSubtitleTool = runSubtitleTool;
-

@@ -242,10 +242,19 @@
         <div class="media-playlist-layout">
           <!-- Available Files -->
           <div class="panel glass-strong">
-            <div class="panel-header">
+            <div class="panel-header available-files-header">
               <h2>📂 Available Files</h2>
-              <button class="btn btn-sm btn-secondary" id="external-btn" onclick="openExternalModal()">🌐
-                External</button>
+              <div class="available-files-actions">
+                <button class="btn btn-sm btn-secondary" id="refresh-files-btn" type="button"
+                  onclick="loadFiles(true)" title="Refresh available files" aria-label="Refresh available files">
+                  ↻
+                </button>
+                <button class="btn btn-sm btn-primary" id="add-selected-btn" onclick="addSelectedToPlaylist()" disabled>
+                  Add selected (0)
+                </button>
+                <button class="btn btn-sm btn-secondary" id="external-btn" onclick="openExternalModal()">🌐
+                  External</button>
+              </div>
             </div>
             <div class="file-list" id="file-browser">
               <div class="empty-message">Loading files...</div>
@@ -256,7 +265,10 @@
           <div class="panel glass-strong">
             <div class="panel-header">
               <h2>📋 Playlist</h2>
-              <button class="btn btn-sm btn-secondary" id="bsl-check-btn">🔍 BSL-S²</button>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <button class="btn btn-sm btn-danger" type="button" onclick="clearMediaPlaylist()">🗑️ Clear playlist</button>
+                <button class="btn btn-sm btn-secondary" id="bsl-check-btn">🔍 BSL-S²</button>
+              </div>
             </div>
             <div class="file-list" id="playlist-container">
               <div class="empty-message">No files in playlist yet</div>
