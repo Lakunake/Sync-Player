@@ -67,6 +67,7 @@ COMMON_FILES = [
     ("res/landing.html", None),
     ("res/lib/*.js", None),
     ("res/package.json", None),
+    ("res/package-lock.json", None),
     ("res/postinstall.js", None),
     ("res/audit.js", None),
     ("res/.patched-advisories.json", None),
@@ -119,6 +120,26 @@ def read_version() -> str:
     return version
 
 
+def lockfile_warnings() -> list:
+    """Compare res/package-lock.json against res/package.json; return human-readable problems."""
+    problems = []
+    try:
+        pkg = json.loads((ROOT / "res" / "package.json").read_text(encoding="utf-8-sig"))
+        lock = json.loads((ROOT / "res" / "package-lock.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError) as exc:
+        return [f"could not compare package-lock.json with package.json: {exc}"]
+
+    root = lock.get("packages", {}).get("", {})
+    if lock.get("version") != pkg.get("version") or root.get("version") != pkg.get("version"):
+        problems.append(f"lockfile version is {lock.get('version')!r}, package.json is {pkg.get('version')!r}")
+    for section in ("dependencies", "devDependencies", "optionalDependencies"):
+        want, have = pkg.get(section, {}), root.get(section, {})
+        if want != have:
+            diff = sorted(set(want) ^ set(have)) or sorted(k for k in want if want[k] != have.get(k))
+            problems.append(f"{section} differ from package.json: {', '.join(diff)}")
+    return problems
+
+
 def resolve_manifest(entries):
     """Expand globs/candidates into an ordered list of (Path, arcname)."""
     resolved = []
@@ -153,6 +174,28 @@ def convert_line_endings(data: bytes, ext: str) -> bytes:
     if ext in CRLF_EXTENSIONS:
         return data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
     return data
+
+
+GITHUB_BLOB = "https://github.com/Lakunake/Sync-Player/blob/main"
+
+# README.md lives in the repo root but is shipped as DOCS/README.md, so its
+# relative links must be re-pointed (order matters: longest prefixes first).
+README_LINK_REWRITES = [
+    ("](DOCS/FAQ.md)", f"]({GITHUB_BLOB}/DOCS/FAQ.md)"),  # FAQ is not shipped in the zip
+    ("](DOCS/", "]("),
+    ("](DOCS)", "](.)"),
+    ("](LICENSE)", "](../LICENSE.txt)"),
+    ("](res/package.json)", "](../res/package.json)"),
+]
+
+
+def rewrite_readme_links(data: bytes, notes: list) -> bytes:
+    text = data.decode("utf-8-sig")
+    for old, new in README_LINK_REWRITES:
+        if old in text:
+            text = text.replace(old, new)
+            notes.append(f"DOCS/README.md: link {old[2:-1]} -> {new[2:-1]}")
+    return text.encode("utf-8")
 
 
 def sanitize_config(data: bytes, notes: list) -> bytes:
@@ -192,6 +235,8 @@ def build_zip(platform: str, version: str, out_dir: Path, keep_config: bool) -> 
                 data = converted
                 if arcname == "config.env" and not keep_config:
                     data = sanitize_config(data, notes)
+                if arcname == "DOCS/README.md":
+                    data = rewrite_readme_links(data, notes)
 
                 info = zipfile.ZipInfo.from_file(path, arcname)
                 info.create_system = 3  # Unix, so unzip honours the permission bits below
@@ -235,6 +280,11 @@ def main() -> int:
     try:
         version = read_version()
         print(f"Sync-Player version: {version}\n")
+        lock_problems = lockfile_warnings()
+        for problem in lock_problems:
+            print(f"[WARN] res/package-lock.json is out of date: {problem}")
+        if lock_problems:
+            print("       (fix with: cd res && npm install --package-lock-only)\n")
         for platform in platforms:
             if args.list:
                 name = ZIP_NAME.format(platform=platform, version=version)

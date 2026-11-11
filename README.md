@@ -13,7 +13,7 @@ A FULLY synchronized, non-coder-friendly HTML5 video player, originally built fo
 ## Table of Contents
 
 - [Sync-Player](#sync-player)
-    - [Read Hosting Methods Here!!](#read-hosting-methods-here)
+    - [Read Usage/Hosting Methods Here!!](#read-usagehosting-methods-here)
   - [Table of Contents](#table-of-contents)
   - [Requirements](#requirements)
   - [Features](#features)
@@ -21,12 +21,12 @@ A FULLY synchronized, non-coder-friendly HTML5 video player, originally built fo
     - [Client Controls (Touch/Click Interface)](#client-controls-touchclick-interface)
     - [Admin Controls (Web Interface)](#admin-controls-web-interface)
   - [Firewall Warning](#firewall-warning)
-  - [File Structure](#-file-structure)
-  - [Configuration](#️-configuration)
+  - [File Structure](#file-structure)
+  - [Configuration](#configuration)
   - [Legal](#legal)
     - [License](#license)
     - [Legal Documents](#legal-documents)
-  - [Credits](#-credits)
+  - [Credits](#credits)
 
 ---
 
