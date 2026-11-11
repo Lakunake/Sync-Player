@@ -185,3 +185,5 @@ res/public/jassub/jassub-worker-modern.wasm
 res/public/jassub/default.woff2
 *.TTF
 *.otf
+/zipped up
+temp-files.txt
