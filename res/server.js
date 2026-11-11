@@ -216,21 +216,49 @@ function validateFilename(filename) {
   if (typeof filename !== 'string' || filename.length === 0) {
     return { valid: false, error: 'Filename must be a non-empty string' };
   }
-  if (filename.length > 255) {
-    return { valid: false, error: 'Filename too long (max 255 characters)' };
+  if (filename.length > 1024) {
+    return { valid: false, error: 'Filename too long (max 1024 characters)' };
   }
-  if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
-    return { valid: false, error: 'Path traversal characters not allowed' };
+  if (filename.includes('\\')) {
+    return { valid: false, error: 'Backslashes are not allowed in media paths' };
   }
   const shellMetachars = /[;&|$`<>\n\r]/;
   if (shellMetachars.test(filename)) {
-    return { valid: false, error: 'Filename contains disallowed shell metacharacters' };
+    return { valid: false, error: 'Media path contains disallowed shell metacharacters' };
   }
-  const safePattern = /^[\w\s\-.()\[\]]+$/;
-  if (!safePattern.test(filename)) {
-    return { valid: false, error: 'Filename contains disallowed characters' };
+  const pathSegments = filename.split('/');
+  const safePattern = /^[\p{L}\p{N}_\s\-.()\[\]]+$/u;
+  if (pathSegments.some(segment => !segment || segment === '.' || segment === '..' || !safePattern.test(segment))) {
+    return { valid: false, error: 'Media path contains disallowed characters' };
   }
-  return { valid: true, sanitized: path.basename(filename) };
+  return { valid: true, sanitized: pathSegments.join('/') };
+}
+
+async function resolveMediaFile(filename) {
+  const validation = validateFilename(filename);
+  if (!validation.valid) {
+    const error = new Error(validation.error);
+    error.code = 'MEDIA_PATH_INVALID';
+    throw error;
+  }
+
+  const mediaRoot = await fs.promises.realpath(path.join(ROOT_DIR, 'media'));
+  const filePath = await fs.promises.realpath(path.join(mediaRoot, validation.sanitized));
+  const relativePath = path.relative(mediaRoot, filePath);
+  if (relativePath === '..' || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
+    const error = new Error('Media path resolves outside the media directory');
+    error.code = 'MEDIA_PATH_INVALID';
+    throw error;
+  }
+
+  const stats = await fs.promises.stat(filePath);
+  if (!stats.isFile()) {
+    const error = new Error('Media path is not a file');
+    error.code = 'MEDIA_PATH_INVALID';
+    throw error;
+  }
+
+  return { filename: validation.sanitized, filePath };
 }
 
 // ==================== Express / SSL Setup ====================
@@ -404,13 +432,12 @@ function getCurrentTrackSelections() {
 
 // Get audio/subtitle tracks for a file
 async function getTracksForFile(filename) {
-  const safeFilename = path.basename(filename);
-  const filePath = path.join(ROOT_DIR, 'media', safeFilename);
+  const { filename: safeFilename, filePath } = await resolveMediaFile(filename);
   const tracks = { audio: [], subtitles: [] };
 
   // Read sidecar JSON manifest if exists
   try {
-    const manifestFilename = safeFilename + '.json';
+    const manifestFilename = safeFilename.replace(/[\\/]/g, '_') + '.json';
     const manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestFilename);
 
     if (fs.existsSync(manifestPath)) {
@@ -664,23 +691,30 @@ function getMediaFiles() {
   }
 
   const mediaPath = path.join(ROOT_DIR, 'media');
-  return new Promise((resolve) => {
-    fs.readdir(mediaPath, (err, files) => {
-      if (err) return resolve([]);
-      const mediaFiles = [];
-      for (const file of files) {
-        const ext = path.extname(file).toLowerCase();
-        if (['.mp4', '.mp3', '.avi', '.mov', '.wmv', '.mkv', '.webm', '.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
-          mediaFiles.push({
-            filename: file,
-            escapedFilename: escapeHTML(file),
-            usesHEVC: ext === '.mkv'
-          });
-        }
+  const mediaExtensions = new Set(['.mp4', '.mp3', '.avi', '.mov', '.wmv', '.mkv', '.webm', '.png', '.jpg', '.jpeg', '.webp']);
+  const mediaFiles = [];
+
+  const scanDirectory = async (directory) => {
+    const entries = await fs.promises.readdir(directory, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await scanDirectory(fullPath);
+      } else if (entry.isFile() && mediaExtensions.has(path.extname(entry.name).toLowerCase())) {
+        const filename = path.relative(mediaPath, fullPath).split(path.sep).join('/');
+        mediaFiles.push({
+          filename,
+          escapedFilename: escapeHTML(filename),
+          usesHEVC: path.extname(entry.name).toLowerCase() === '.mkv'
+        });
       }
-      mediaFilesCache = { data: mediaFiles, lastUpdate: Date.now() };
-      resolve(mediaFiles);
-    });
+    }
+  };
+
+  return scanDirectory(mediaPath).then(() => {
+    mediaFilesCache = { data: mediaFiles, lastUpdate: Date.now() };
+    return mediaFiles;
   });
 }
 
@@ -719,8 +753,16 @@ const thumbnailRateLimiter = rateLimit({
 });
 
 app.get('/api/files', filesRateLimiter, async (req, res) => {
-  const files = await getMediaFiles();
-  res.json(files);
+  try {
+    if (req.query.refresh === '1') {
+      mediaFilesCache = { data: null, lastUpdate: 0 };
+    }
+    const files = await getMediaFiles();
+    res.json(files);
+  } catch (error) {
+    console.error('Error listing media files:', error);
+    res.status(500).json({ error: 'Unable to list media files' });
+  }
 });
 
 // API to get orphan tracks (files in TRACKS_DIR not in any manifest)
@@ -777,6 +819,12 @@ app.get('/api/tracks/:filename', tracksRateLimiter, async (req, res) => {
     const tracks = await getTracksForFile(validation.sanitized);
     res.json(tracks);
   } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    if (error.code === 'MEDIA_PATH_INVALID') {
+      return res.status(400).json({ error: error.message });
+    }
     console.error('Error reading track info:', error);
     res.status(500).json({ error: 'Unable to read track information' });
   }
@@ -794,6 +842,7 @@ if (!fs.existsSync(THUMBNAIL_DIR)) {
 // but we keep /thumbnails explicitly to prevent breaking existing client caches
 app.use('/thumbnails', express.static(THUMBNAIL_DIR));
 
+const audioCoverExtractionPromises = new Map();
 
 // Generate thumbnail from video (720p default, random frame from first third)
 app.get('/api/thumbnail/:filename', thumbnailRateLimiter, async (req, res) => {
@@ -806,39 +855,92 @@ app.get('/api/thumbnail/:filename', thumbnailRateLimiter, async (req, res) => {
     return res.status(400).json({ error: validation.error });
   }
 
-  const safeFilename = validation.sanitized;
-  const videoPath = path.join(ROOT_DIR, 'media', safeFilename);
+  let safeFilename;
+  let videoPath;
+  try {
+    ({ filename: safeFilename, filePath: videoPath } = await resolveMediaFile(validation.sanitized));
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    if (error.code === 'MEDIA_PATH_INVALID') {
+      return res.status(400).json({ error: error.message });
+    }
+    console.error('Error resolving media path for thumbnail:', error);
+    return res.status(500).json({ error: 'Unable to access media file' });
+  }
 
   // Support custom width (default 720p)
   let width = parseInt(req.query.width) || 720;
   width = Math.min(1920, Math.max(50, width)); // Clamp 50-1920
 
   // Use distinct cache file for different widths (backward compat for 720)
-  const thumbnailFilename = width === 720
+  let thumbnailFilename = width === 720
     ? safeFilename.replace(/\.[^.]+$/, '.jpg')
     : safeFilename.replace(/\.[^.]+$/, `.${width}.jpg`);
+  if (safeFilename.includes('/')) {
+    const pathHash = crypto.createHash('sha1').update(safeFilename).digest('hex').slice(0, 10);
+    thumbnailFilename = `${pathHash}-${path.basename(thumbnailFilename)}`;
+  }
 
   const thumbnailPath = path.join(THUMBNAIL_DIR, thumbnailFilename);
-
-  // Check if thumbnail already exists (cached)
-  if (fs.existsSync(thumbnailPath)) {
-    return res.json({ thumbnail: `/thumbnails/${thumbnailFilename}` });
-  }
-
-  // Check if file exists
-  if (!fs.existsSync(videoPath)) {
-    return res.status(404).json({ error: 'File not found' });
-  }
 
   // Audio check
   const audioExtensions = ['.mp3', '.flac', '.m4a', '.aac', '.ogg', '.wav'];
   const isAudioFile = audioExtensions.some(ext => safeFilename.toLowerCase().endsWith(ext));
 
   if (isAudioFile) {
-    if (await generateAudioCoverArt(videoPath, thumbnailPath)) {
-      return res.json({ thumbnail: `/thumbnails/${thumbnailFilename}`, isAudio: true });
+    const audioThumbnailBase = safeFilename.replace(/\.[^.]+$/, '.jpg');
+    const audioThumbnailFilename = safeFilename.includes('/')
+      ? `${crypto.createHash('sha1').update(safeFilename).digest('hex').slice(0, 10)}-${path.basename(audioThumbnailBase)}`
+      : audioThumbnailBase;
+    const audioThumbnailPath = path.join(THUMBNAIL_DIR, audioThumbnailFilename);
+    const audioThumbnailPaths = [
+      audioThumbnailPath,
+      audioThumbnailPath.replace(/\.jpg$/, '.png'),
+      audioThumbnailPath.replace(/\.jpg$/, '.webp')
+    ];
+
+    // Older versions cached audio art separately for the 240px request.
+    const legacyAudioThumbnailBase = safeFilename.replace(/\.[^.]+$/, '.240.jpg');
+    const legacyAudioThumbnailFilename = safeFilename.includes('/')
+      ? `${crypto.createHash('sha1').update(safeFilename).digest('hex').slice(0, 10)}-${path.basename(legacyAudioThumbnailBase)}`
+      : legacyAudioThumbnailBase;
+    const cachedAudioThumbnail = [
+      ...audioThumbnailPaths,
+      path.join(THUMBNAIL_DIR, legacyAudioThumbnailFilename),
+      path.join(THUMBNAIL_DIR, legacyAudioThumbnailFilename.replace(/\.jpg$/, '.png')),
+      path.join(THUMBNAIL_DIR, legacyAudioThumbnailFilename.replace(/\.jpg$/, '.webp'))
+    ].find(candidate => fs.existsSync(candidate));
+    if (cachedAudioThumbnail) {
+      return res.json({
+        thumbnail: `/thumbnails/${path.basename(cachedAudioThumbnail)}`,
+        isAudio: true
+      });
+    }
+
+    let extraction = audioCoverExtractionPromises.get(safeFilename);
+    if (!extraction) {
+      extraction = generateAudioCoverArt(videoPath, audioThumbnailPath)
+        .finally(() => audioCoverExtractionPromises.delete(safeFilename));
+      audioCoverExtractionPromises.set(safeFilename, extraction);
+    }
+
+    if (await extraction) {
+      const extractedCover = audioThumbnailPaths.find(candidate => fs.existsSync(candidate));
+      if (extractedCover) {
+        return res.json({
+          thumbnail: `/thumbnails/${path.basename(extractedCover)}`,
+          isAudio: true
+        });
+      }
     }
     return res.json({ thumbnail: null, isAudio: true });
+  }
+
+  // Check if thumbnail already exists (cached)
+  if (fs.existsSync(thumbnailPath)) {
+    return res.json({ thumbnail: `/thumbnails/${thumbnailFilename}` });
   }
 
   // Video - Try node-av first
@@ -1532,7 +1634,7 @@ io.on('connection', (socket) => {
         videoInfo.selectedSubtitleTrack = item.selectedSubtitleTrack;
       }
 
-      videoInfo.usesHEVC = item.filename.endsWith('.mkv');
+      videoInfo.usesHEVC = item.filename.toLowerCase().endsWith('.mkv');
       processedPlaylist.push(videoInfo);
     }
 
@@ -2103,7 +2205,7 @@ io.on('connection', (socket) => {
 
             // Criterion A: Filename match (case-insensitive, full basename)
             const clientBasename = clientFile.name.toLowerCase();
-            const serverBasename = playlistVideo.filename.toLowerCase();
+            const serverBasename = path.basename(playlistVideo.filename).toLowerCase();
             if (clientBasename === serverBasename) {
               matchScore++;
             }
@@ -2163,7 +2265,7 @@ io.on('connection', (socket) => {
             }
           } else {
             // Simple filename-only matching (original behavior, BSL_ADVANCED_MATCH=false)
-            if (clientFile.name.toLowerCase() === playlistVideo.filename.toLowerCase()) {
+            if (clientFile.name.toLowerCase() === path.basename(playlistVideo.filename).toLowerCase()) {
               matchedVideos[index] = clientFile.name;
               matchedClientFiles.add(clientFile.name.toLowerCase());
               console.log(`${colors.green}  Auto-matched: ${clientFile.name} -> playlist[${index}]${colors.reset}`);

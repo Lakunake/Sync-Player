@@ -421,6 +421,116 @@
       background: rgba(33, 150, 243, 0.1);
     }
 
+    .available-files-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .available-files-header {
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .available-files-actions .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    #refresh-files-btn {
+      min-width: 36px;
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    #refresh-files-btn.is-loading {
+      animation: spin-refresh 0.8s linear infinite;
+    }
+
+    @keyframes spin-refresh {
+      to { transform: rotate(360deg); }
+    }
+
+    @media (max-width: 500px) {
+      .available-files-actions {
+        justify-content: flex-end;
+        flex-wrap: wrap;
+      }
+    }
+
+    .media-folder {
+      flex: 0 0 auto;
+    }
+
+    .media-folder-name {
+      display: block;
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 0;
+      color: inherit;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 600;
+      text-align: left;
+    }
+
+    .media-folder-name:hover {
+      background: rgba(33, 150, 243, 0.1);
+    }
+
+    .media-folder-contents {
+      display: grid;
+      grid-template-rows: 0fr;
+      opacity: 0;
+      transition: grid-template-rows 0.25s ease, opacity 0.2s ease;
+    }
+
+    .media-folder.is-open > .media-folder-contents {
+      grid-template-rows: 1fr;
+      opacity: 1;
+    }
+
+    .media-folder-inner {
+      min-height: 0;
+      overflow: hidden;
+      padding: 8px 0 0 16px;
+    }
+
+    .media-folder-inner > .file-item,
+    .media-folder-inner > .media-folder {
+      margin-bottom: 8px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .media-folder-contents {
+        transition: none;
+      }
+    }
+
+    .media-file-label {
+      min-width: 0;
+      cursor: pointer;
+    }
+
+    .media-file-label input[type="checkbox"] {
+      flex: 0 0 auto;
+      width: 16px;
+      height: 16px;
+      accent-color: #2196F3;
+    }
+
+    .media-file-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .media-file-warning {
+      flex: 0 0 auto;
+      color: #FF9800;
+    }
+
     .file-name {
       font-size: 14px;
       display: flex;
@@ -525,8 +635,8 @@
     }
 
     .playlist-item .thumbnail-bg.themed {
-      opacity: 1;
-      filter: none;
+      opacity: 0.5;
+      filter: blur(10px);
     }
 
     .playlist-item>*:not(.thumbnail-bg) {

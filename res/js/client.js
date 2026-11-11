@@ -7,6 +7,7 @@ const statusEl = document.getElementById('status');
 const currentTrackInfoEl = document.getElementById('current-track-info');
 const mediaPlaceholder = document.getElementById('media-placeholder');
 const subtitleOverlay = document.getElementById('subtitle-overlay');
+let audioCoverRequestId = 0;
 
 // Initialize Subtitle Renderer (Declared here, initialized after class def)
 let subtitleRenderer;
@@ -20,6 +21,10 @@ const imageExtensions = ['.png', '.jpg', '.jpeg', '.webp'];
 function isImageFile(filename) {
   const ext = filename.substring(filename.lastIndexOf('.')).toLowerCase();
   return imageExtensions.includes(ext);
+}
+
+function getMediaUrl(filename) {
+  return `/media/${filename.split('/').map(encodeURIComponent).join('/')}`;
 }
 
 // Helper to check if a file is audio
@@ -47,6 +52,7 @@ let currentPlatform = 'local'; // local, youtube, vimeo, twitch, etc.
 
 // Helper to hide all player containers
 function hideAllPlayers() {
+  audioCoverRequestId++;
   const containers = document.querySelectorAll('.player-container');
   containers.forEach(el => el.classList.remove('visible'));
   youtubeContainer.classList.remove('visible');
@@ -475,7 +481,7 @@ socket.on('initial-state', (state) => {
     const videoToPreload = (currentPlaylist.mainVideoIndex >= 0 && currentPlaylist.videos.length > currentPlaylist.mainVideoIndex)
       ? currentPlaylist.videos[currentPlaylist.mainVideoIndex]
       : currentPlaylist.videos[0];
-    preloadVideo.src = `/media/${videoToPreload.filename}`;
+    preloadVideo.src = getMediaUrl(videoToPreload.filename);
     preloadVideo.load();
   }
 
@@ -641,7 +647,7 @@ function loadCurrentVideo(startTime = 0) {
       console.log('BSL-S²: Loading IMAGE from LOCAL file');
       showTemporaryMessage('Displaying local image (BSL-S²)', 2000);
     } else {
-      imageSrc = `/media/${currentVideo.filename}`;
+      imageSrc = getMediaUrl(currentVideo.filename);
       console.log('Loading image from server:', imageSrc);
     }
 
@@ -659,16 +665,40 @@ function loadCurrentVideo(startTime = 0) {
 
   // Check if it's an audio file and handle display
   if (isAudioFile(currentVideo.filename)) {
-    imageDisplay.style.display = 'block';
-    // Use the thumbnail API which extracts embedded cover art
-    imageDisplay.src = `/api/thumbnail/${encodeURIComponent(currentVideo.filename)}`;
+    const coverRequestId = ++audioCoverRequestId;
+    imageDisplay.style.display = 'none';
+    imageDisplay.removeAttribute('src');
+    mediaPlaceholder.style.display = 'flex';
 
-    // Hide broken image if no cover art found
-    imageDisplay.onerror = function () {
-      this.style.display = 'none';
-      mediaPlaceholder.style.display = 'flex';
-      showTemporaryMessage('🎵 Playing Audio', 3000);
-    };
+    fetch(`/api/thumbnail/${encodeURIComponent(currentVideo.filename)}`)
+      .then(response => {
+        if (!response.ok) throw new Error(`Thumbnail request failed: ${response.status}`);
+        return response.json();
+      })
+      .then(data => {
+        if (coverRequestId !== audioCoverRequestId || !data.thumbnail) {
+          if (coverRequestId === audioCoverRequestId) showTemporaryMessage('🎵 Playing Audio', 3000);
+          return;
+        }
+
+        imageDisplay.onload = () => {
+          if (coverRequestId !== audioCoverRequestId) return;
+          imageDisplay.style.display = 'block';
+          mediaPlaceholder.style.display = 'none';
+        };
+        imageDisplay.onerror = () => {
+          if (coverRequestId !== audioCoverRequestId) return;
+          imageDisplay.style.display = 'none';
+          mediaPlaceholder.style.display = 'flex';
+          showTemporaryMessage('🎵 Playing Audio', 3000);
+        };
+        imageDisplay.src = data.thumbnail;
+      })
+      .catch(error => {
+        if (coverRequestId !== audioCoverRequestId) return;
+        console.warn('Unable to load audio cover art:', error);
+        showTemporaryMessage('🎵 Playing Audio', 3000);
+      });
 
     video.style.opacity = '0.001';
   } else {
@@ -687,7 +717,7 @@ function loadCurrentVideo(startTime = 0) {
     const msg = isAudioFile(currentVideo.filename) ? 'Playing local audio (BSL-S²)' : 'Playing local video (BSL-S²)';
     showTemporaryMessage(msg, 2000);
   } else {
-    videoSrc = `/media/${currentVideo.filename}`;
+    videoSrc = getMediaUrl(currentVideo.filename);
     console.log('Loading media from server:', videoSrc);
   }
 
