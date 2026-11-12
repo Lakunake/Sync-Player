@@ -27,7 +27,7 @@ class RoomLogger {
       try {
         const raw = await fs.promises.readFile(filePath, 'utf8');
         data = JSON.parse(raw);
-      } catch (e) {}
+      } catch (e) { }
 
       data = updateFn(data);
 
@@ -90,7 +90,7 @@ class RoomLogger {
         event: 'room_created'
       }]
     };
-    fs.writeFile(roomLogFile, JSON.stringify(logData, null, 2), () => {});
+    fs.writeFile(roomLogFile, JSON.stringify(logData, null, 2), () => { });
   }
 
   deleteRoomLog(roomCode) {

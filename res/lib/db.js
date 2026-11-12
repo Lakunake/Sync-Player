@@ -61,29 +61,29 @@ db.exec(`
 // Migration logic
 if (isNewDb) {
   console.log(`${colors.cyan}Initializing native SQLite database...${colors.reset}`);
-  
+
   // 1. Migrate memory.json
   const memoryFile = path.join(MEMORY_DIR, 'memory.json');
   if (fs.existsSync(memoryFile)) {
     try {
       const rawData = fs.readFileSync(memoryFile, 'utf8');
-      
+
       // If encrypted legacy admin_fingerprint check fails, ignore here. 
       // It's mostly modern memory.json format we migrate.
       if (!rawData.includes(':')) {
         const data = JSON.parse(rawData);
-        
+
         const insertKv = db.prepare('INSERT INTO kv_store (key, value) VALUES (?, ?)');
         if (data.encrypted) insertKv.run('admin_fingerprint', data.encrypted);
         if (data.encoders && Array.isArray(data.encoders) && data.encoders.length > 0) {
           insertKv.run('encoders', JSON.stringify(data.encoders));
         }
-        
+
         const insertClient = db.prepare('INSERT INTO client_names (client_id, name) VALUES (?, ?)');
         for (const [clientId, name] of Object.entries(data.clientNames || {})) {
           insertClient.run(clientId, name);
         }
-        
+
         const insertBsl = db.prepare('INSERT INTO bsl_matches (client_id, client_file, playlist_file) VALUES (?, ?, ?)');
         for (const [clientId, matches] of Object.entries(data.bslMatches || {})) {
           for (const [clientFile, playlistFile] of Object.entries(matches)) {
@@ -91,7 +91,7 @@ if (isNewDb) {
           }
         }
       }
-      
+
       fs.renameSync(memoryFile, memoryFile + '.bak');
       console.log(`${colors.green}Migrated memory.json to SQLite${colors.reset}`);
     } catch (e) {

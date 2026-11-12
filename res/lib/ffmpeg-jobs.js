@@ -5,7 +5,15 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const express = require('express');
-const { colors, ROOT_DIR, TRACKS_DIR, MEMORY_DIR } = require('./config');
+const {
+  colors,
+  ROOT_DIR,
+  TRACKS_DIR,
+  MEMORY_DIR,
+  validateFilename,
+  resolveMediaFile,
+  invalidateMediaFilesCache
+} = require('./config');
 const { verifyFfmpegAuth, createFfmpegAuthHandler } = require('./security');
 const { getEncoders } = require('./memory');
 const {
@@ -30,28 +38,32 @@ async function runFfmpegJob(jobId, type, params) {
   job.status = 'running';
   job.startTime = Date.now();
 
-  const safeFilename = path.basename(params.filename);
-  const addSuffix = (name, suffix) => {
-    const ext = path.extname(name);
-    return path.join(ROOT_DIR, 'media', path.basename(name, ext) + suffix + ext);
+  const addSuffix = (fullInputPath, suffix, newExt = null) => {
+    const dir = path.dirname(fullInputPath);
+    const ext = path.extname(fullInputPath);
+    const base = path.basename(fullInputPath, ext);
+    return path.join(dir, base + suffix + (newExt || ext));
   };
 
-  const inputPath = path.join(ROOT_DIR, 'media', safeFilename);
-
   try {
+    let safeFilename = '';
+    let inputPath = '';
+    if (type === 'remux' || type === 'reencode' || type === 'extract') {
+      ({ filename: safeFilename, filePath: inputPath } = await resolveMediaFile(params.filename));
+    }
+
     if (type === 'remux') {
       const preset = params.preset;
       let outputPath;
 
       if (preset === 'mp4_fast') {
-        outputPath = path.join(ROOT_DIR, 'media', path.basename(safeFilename, path.extname(safeFilename)) + '-clean.mp4');
+        outputPath = addSuffix(inputPath, '-clean', '.mp4');
       } else if (preset === 'keep_format') {
-        const ext = path.extname(safeFilename);
-        outputPath = path.join(ROOT_DIR, 'media', path.basename(safeFilename, ext) + '-clean' + ext);
+        outputPath = addSuffix(inputPath, '-clean');
       } else if (preset === 'mkv_copy') {
-        outputPath = path.join(ROOT_DIR, 'media', path.basename(safeFilename, path.extname(safeFilename)) + '-clean.mkv');
+        outputPath = addSuffix(inputPath, '-clean', '.mkv');
       } else {
-        outputPath = addSuffix(safeFilename, '-fixed');
+        outputPath = addSuffix(inputPath, '-fixed');
       }
 
       if (!Demuxer || !Muxer) throw new Error('node-av not available');
@@ -110,6 +122,7 @@ async function runFfmpegJob(jobId, type, params) {
       job.progress = 100;
       job.endTime = Date.now();
       job.duration = (job.endTime - job.startTime) / 1000;
+      invalidateMediaFilesCache();
 
       try {
         await extractAndShareTracks(inputPath, safeFilename, outputPath, true, ffmpegJobs);
@@ -119,7 +132,7 @@ async function runFfmpegJob(jobId, type, params) {
 
     } else if (type === 'reencode') {
       const { resolution, quality, encoder: encoderName } = params.options;
-      const outputPath = addSuffix(safeFilename, `-${encoderName}-${resolution}-${quality}`);
+      const outputPath = addSuffix(inputPath, `-${encoderName}-${resolution}-${quality}`);
 
       if (!Demuxer || !Muxer || !Decoder || !Encoder) throw new Error('node-av not fully loaded');
 
@@ -194,6 +207,7 @@ async function runFfmpegJob(jobId, type, params) {
       job.progress = 100;
       job.endTime = Date.now();
       job.duration = (job.endTime - job.startTime) / 1000;
+      invalidateMediaFilesCache();
 
       try {
         await extractAndShareTracks(inputPath, safeFilename, outputPath, true, ffmpegJobs);
@@ -221,16 +235,23 @@ async function runFfmpegJob(jobId, type, params) {
       }
 
     } else if (type === 'track-tool') {
-      const { action, sourceVideo, targetVideo, trackIndex, orphanFile } = params.options;
+      const { action, sourceVideo, targetVideo, trackIndex, orphanFile } = params.options || {};
+      const targetValidation = validateFilename(targetVideo);
+      if (!targetValidation.valid) throw new Error(`Invalid target video: ${targetValidation.error}`);
+      const safeTargetVideo = targetValidation.sanitized;
 
       if (action === 'rebind' || action === 'share') {
-        const src = readSourceTrackGlobal(sourceVideo, trackIndex);
+        const sourceValidation = validateFilename(sourceVideo);
+        if (!sourceValidation.valid) throw new Error(`Invalid source video: ${sourceValidation.error}`);
+        const safeSourceVideo = sourceValidation.sanitized;
+
+        const src = readSourceTrackGlobal(safeSourceVideo, trackIndex);
         if (src.error) throw new Error(src.error);
 
-        const tgt = prepareTargetManifestGlobal(targetVideo);
+        const tgt = prepareTargetManifestGlobal(safeTargetVideo);
 
         if (action === 'rebind') {
-          let absoluteOldPath = path.join(TRACKS_DIR, src.track.path);
+          let absoluteOldPath = path.join(TRACKS_DIR, path.basename(src.track.path));
           if (!fs.existsSync(absoluteOldPath) && path.isAbsolute(src.track.path) && fs.existsSync(src.track.path)) {
             absoluteOldPath = src.track.path;
           }
@@ -250,7 +271,7 @@ async function runFfmpegJob(jobId, type, params) {
 
           src.manifest.externalTracks.splice(src.arrayIndex, 1);
           await fs.promises.writeFile(src.manifestPath, JSON.stringify(src.manifest, null, 2));
-          console.log(`[Subtitle] Rebound ${newFileName} from ${sourceVideo} to ${targetVideo}`);
+          console.log(`[Subtitle] Rebound ${newFileName} from ${safeSourceVideo} to ${safeTargetVideo}`);
 
         } else if (action === 'share') {
           if (tgt.manifest.externalTracks.some(t => t.path === src.track.path)) {
@@ -260,17 +281,21 @@ async function runFfmpegJob(jobId, type, params) {
             type: src.track.type || 'subtitle', lang: src.track.lang || 'und', title: src.track.title || 'Track'
           }));
           await fs.promises.writeFile(tgt.manifestPath, JSON.stringify(tgt.manifest, null, 2));
-          console.log(`[Subtitle] Shared ${src.track.path} from ${sourceVideo} to ${targetVideo}`);
+          console.log(`[Subtitle] Shared ${src.track.path} from ${safeSourceVideo} to ${safeTargetVideo}`);
         }
 
         job.status = 'completed';
         job.progress = 100;
 
       } else if (action === 'bind-orphan') {
-        const sourcePath = path.join(TRACKS_DIR, orphanFile);
+        const safeOrphanFile = path.basename(String(orphanFile || ''));
+        if (!safeOrphanFile || safeOrphanFile !== orphanFile) {
+          throw new Error('Invalid orphan track filename');
+        }
+        const sourcePath = path.join(TRACKS_DIR, safeOrphanFile);
         if (!fs.existsSync(sourcePath)) throw new Error('Orphan file not found');
 
-        const tgt = prepareTargetManifestGlobal(targetVideo);
+        const tgt = prepareTargetManifestGlobal(safeTargetVideo);
         let finalSourcePath = sourcePath;
         let ext = path.extname(sourcePath).toLowerCase();
         let wasConverted = false;

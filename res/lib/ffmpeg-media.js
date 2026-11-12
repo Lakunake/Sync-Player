@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { execFile, exec } = require('child_process');
-const { colors, ROOT_DIR, MEMORY_DIR, MEDIA_DIR, THUMBNAIL_DIR } = require('./config');
+const { colors, ROOT_DIR, MEMORY_DIR, MEDIA_DIR, THUMBNAIL_DIR, resolveMediaFile } = require('./config');
 const { getFFmpegBin } = require('./ffmpeg-tracks');
 const { getEncoders, setEncoders } = require('./memory');
 
@@ -86,29 +86,29 @@ async function cleanVttFile(filePath) {
 
           if (rawPayload.length > 0) {
             let payloadText = rawPayload.join('\n');
-            
+
             // 1. Strip ASS drawing commands specifically if tags survived
             payloadText = payloadText.replace(/{\\[^}]*p[1-9][^}]*}.*?(?:{\\[^}]*p0[^}]*}|$)/gi, '');
-            
+
             // 2. Strip remaining ASS tags { ... }
             payloadText = payloadText.replace(/{[^}]+}/g, '');
-            
+
             // 3. Convert \N and \n to real newlines
             payloadText = payloadText.replace(/\\[Nn]/g, '\n');
-            
+
             let newLines = payloadText.split('\n');
             let finalPayload = [];
-            
+
             for (let line of newLines) {
               let txt = line.trim();
               if (txt === '') continue; // Skip empty lines
-              
+
               // Check if it's an orphaned drawing command (e.g. ffmpeg stripped the {\p1} tags)
               let txtNoTags = txt.replace(/<[^>]+>/g, '').trim();
               if (/^m\s+-?\d+/.test(txtNoTags)) {
                 continue; // Skip this line
               }
-              
+
               finalPayload.push(txt);
             }
 
@@ -258,7 +258,7 @@ async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFile
 
     const decoder = await Decoder.create(videoStream);
     const scaler = new avApi.Scaler();
-    
+
     const packetGen = input.packets(videoStream.index);
     const frameGen = decoder.frames(packetGen);
 
@@ -269,7 +269,7 @@ async function generateThumbnailNodeAv(videoPath, thumbnailPath, width, safeFile
       gotFrame = true;
       break;
     }
-    
+
     scaler.close();
 
     if (gotFrame) {
@@ -327,7 +327,7 @@ async function generateThumbnailFfmpeg(videoPath, thumbnailPath, width, safeFile
       args.push('-ss', String(ssTime));
     }
     args.push('-i', inputPath, '-vframes', '1', '-vf', scaleFilter, '-q:v', '2', '-y', thumbnailPath);
-    
+
     execFile(getFFmpegBin(), args, (error) => {
       if (error) return reject(error);
       try {
@@ -370,8 +370,12 @@ async function getFontHash(filePath) {
 
 async function extractFonts(videoFilename) {
   if (!videoFilename) return;
-  const videoPath = path.join(MEDIA_DIR, videoFilename);
-  if (!fs.existsSync(videoPath)) return;
+  let videoPath;
+  try {
+    ({ filePath: videoPath } = await resolveMediaFile(videoFilename));
+  } catch {
+    return;
+  }
 
   const fontDir = path.join(path.dirname(THUMBNAIL_DIR), '..', 'font');
   if (!fs.existsSync(fontDir)) fs.mkdirSync(fontDir, { recursive: true });

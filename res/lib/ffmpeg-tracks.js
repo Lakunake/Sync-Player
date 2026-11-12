@@ -4,7 +4,16 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { colors, TRACKS_DIR, TRACKS_MANIFEST_DIR, ROOT_DIR } = require('./config');
+const {
+  colors,
+  TRACKS_DIR,
+  TRACKS_MANIFEST_DIR,
+  MEDIA_DIR,
+  ROOT_DIR,
+  normalizeMediaRelativePath,
+  getManifestFilename,
+  getSafeTrackPrefix
+} = require('./config');
 
 // node-av imports
 let Demuxer;
@@ -31,9 +40,16 @@ function getFFmpegBin() {
 // =================================================================
 // Track Manifest Helpers
 // =================================================================
+function resolveManifestPathForRead(videoFile) {
+  const primaryPath = path.join(TRACKS_MANIFEST_DIR, getManifestFilename(videoFile));
+  if (fs.existsSync(primaryPath)) return primaryPath;
+  const legacyPath = path.join(TRACKS_MANIFEST_DIR, path.basename(videoFile) + '.json');
+  if (fs.existsSync(legacyPath)) return legacyPath;
+  return primaryPath;
+}
+
 function readSourceTrackGlobal(videoFile, trackIdx) {
-  const manifestName = path.basename(videoFile) + '.json';
-  const manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestName);
+  const manifestPath = resolveManifestPathForRead(videoFile);
 
   if (!fs.existsSync(manifestPath)) {
     return { error: 'Source video does not have a track manifest.' };
@@ -56,13 +72,18 @@ function readSourceTrackGlobal(videoFile, trackIdx) {
 }
 
 function prepareTargetManifestGlobal(targetVideo) {
-  const manifestName = path.basename(targetVideo) + '.json';
+  const normalizedTarget = normalizeMediaRelativePath(targetVideo);
+  const manifestName = getManifestFilename(normalizedTarget);
   const manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestName);
-  let manifest = { externalTracks: [] };
+  const legacyManifestPath = path.join(TRACKS_MANIFEST_DIR, path.basename(normalizedTarget) + '.json');
+  let manifest = { videoFilename: normalizedTarget, externalTracks: [] };
 
   if (fs.existsSync(manifestPath)) {
     try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch (e) { }
+  } else if (legacyManifestPath !== manifestPath && fs.existsSync(legacyManifestPath)) {
+    try { manifest = JSON.parse(fs.readFileSync(legacyManifestPath, 'utf8')); } catch (e) { }
   }
+  manifest.videoFilename = normalizedTarget;
   if (!manifest.externalTracks) manifest.externalTracks = [];
 
   let maxIndex = -1;
@@ -80,7 +101,7 @@ function prepareTargetManifestGlobal(targetVideo) {
     manifest,
     manifestPath,
     nextIndex: maxIndex + 1,
-    safeBaseName: path.basename(targetVideo).replace(/\.[^/.]+$/, '')
+    safeBaseName: getSafeTrackPrefix(normalizedTarget)
   };
 }
 
@@ -128,8 +149,7 @@ async function extractTracksForFile(inputPath, safeFilename, trackType, targetFo
       ffmpegJobs.push(job);
     }
 
-    const originalExt = path.extname(safeFilename);
-    const baseName = path.basename(safeFilename, originalExt);
+    const baseName = getSafeTrackPrefix(safeFilename);
 
     let ext = targetFormat;
     if (trackType === 'subtitle') {
@@ -248,13 +268,16 @@ async function extractTracksForFile(inputPath, safeFilename, trackType, targetFo
 
       // Update manifest for the source video
       try {
-        const manifestFilename = safeFilename + '.json';
+        const normalizedSource = normalizeMediaRelativePath(safeFilename);
+        const manifestFilename = getManifestFilename(normalizedSource);
         const manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestFilename);
-        let manifest = { externalTracks: [] };
+        let manifest = { videoFilename: normalizedSource, externalTracks: [] };
 
         if (fs.existsSync(manifestPath)) {
           try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch (e) { }
         }
+        manifest.videoFilename = normalizedSource;
+        if (!Array.isArray(manifest.externalTracks)) manifest.externalTracks = [];
 
         const existingIdx = manifest.externalTracks.findIndex(t => t.path === outputFilename);
         const newTrack = buildTrackEntryGlobal(outputFilename, { type: trackType, lang, title });
@@ -285,7 +308,10 @@ async function extractTracksForFile(inputPath, safeFilename, trackType, targetFo
 // Post-completion: Extract all tracks from original and share to output
 // =================================================================
 async function extractAndShareTracks(inputPath, safeFilename, outputPath, isSideJob = false, ffmpegJobs = null) {
-  const outputFilename = path.basename(outputPath);
+  const relOut = path.relative(MEDIA_DIR, outputPath);
+  const outputFilename = (!relOut.startsWith('..') && !path.isAbsolute(relOut))
+    ? relOut.split(path.sep).join('/')
+    : path.basename(outputPath);
   console.log(`[FFmpeg] Auto-extracting tracks from ${safeFilename} and sharing to ${outputFilename}...`);
 
   let allTracks = [];
@@ -328,6 +354,7 @@ async function extractAndShareTracks(inputPath, safeFilename, outputPath, isSide
 
 module.exports = {
   getFFmpegBin,
+  resolveManifestPathForRead,
   readSourceTrackGlobal,
   prepareTargetManifestGlobal,
   buildTrackEntryGlobal,

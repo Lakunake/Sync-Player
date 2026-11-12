@@ -3,6 +3,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 // ANSI color codes for console output
 const colors = {
@@ -268,11 +269,118 @@ if (SERVER_MODE) {
   console.log = () => { };
 }
 
+// =================================================================
+// Shared Media Path Validation, Resolution & Naming Helpers
+// =================================================================
+const WINDOWS_RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+
+function validateFilename(filename) {
+  if (typeof filename !== 'string' || filename.length === 0) {
+    return { valid: false, error: 'Filename must be a non-empty string' };
+  }
+  if (filename.length > 1024) {
+    return { valid: false, error: 'Filename too long (max 1024 characters)' };
+  }
+  if (filename.includes('\\')) {
+    return { valid: false, error: 'Backslashes are not allowed in media paths' };
+  }
+  if (/[\x00-\x1f\x7f]/.test(filename)) {
+    return { valid: false, error: 'Media path contains control characters' };
+  }
+  const shellMetachars = /[;|$`<>]/;
+  if (shellMetachars.test(filename)) {
+    return { valid: false, error: 'Media path contains disallowed shell metacharacters' };
+  }
+  const pathSegments = filename.split('/');
+  // Allow Unicode letters, combining marks (NFD/Indic/Thai/Arabic), digits, spaces, and common media filename punctuation
+  const safePattern = /^[\p{L}\p{M}\p{N}_ \-.()\[\]{}'&,+#%@!=~]+$/u;
+  for (const segment of pathSegments) {
+    if (
+      !segment ||
+      /^\.+$/.test(segment) ||
+      segment.includes(':') ||
+      WINDOWS_RESERVED_NAMES.test(segment) ||
+      !safePattern.test(segment)
+    ) {
+      return { valid: false, error: 'Media path contains disallowed characters' };
+    }
+  }
+  return { valid: true, sanitized: pathSegments.join('/') };
+}
+
+async function resolveMediaFile(filename) {
+  const validation = validateFilename(filename);
+  if (!validation.valid) {
+    const error = new Error(validation.error);
+    error.code = 'MEDIA_PATH_INVALID';
+    throw error;
+  }
+
+  const mediaRoot = await fs.promises.realpath(MEDIA_DIR);
+  const filePath = await fs.promises.realpath(path.join(mediaRoot, validation.sanitized));
+  const relativePath = path.relative(mediaRoot, filePath);
+  if (relativePath === '..' || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
+    const error = new Error('Media path resolves outside the media directory');
+    error.code = 'MEDIA_PATH_INVALID';
+    throw error;
+  }
+
+  const stats = await fs.promises.stat(filePath);
+  if (!stats.isFile()) {
+    const error = new Error('Media path is not a file');
+    error.code = 'MEDIA_PATH_INVALID';
+    throw error;
+  }
+
+  return { filename: validation.sanitized, filePath };
+}
+
+function normalizeMediaRelativePath(videoFilename) {
+  return String(videoFilename || '').replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+function getManifestFilename(videoFilename) {
+  const normalized = normalizeMediaRelativePath(videoFilename);
+  return normalized.replace(/\//g, '_') + '.json';
+}
+
+function getSafeTrackPrefix(videoFilename) {
+  const normalized = normalizeMediaRelativePath(videoFilename);
+  return normalized.replace(/\.[^/.]+$/, '').replace(/\//g, '_');
+}
+
+function getThumbnailFilename(safeFilename, width = 720, ext = '.jpg') {
+  const normalized = normalizeMediaRelativePath(safeFilename);
+  const suffix = width === 720 ? ext : `.${width}${ext}`;
+  const base = path.basename(normalized).replace(/\.[^.]+$/, suffix);
+  if (normalized.includes('/')) {
+    const pathHash = crypto.createHash('sha1').update(normalized).digest('hex').slice(0, 10);
+    return `${pathHash}-${base}`;
+  }
+  return base;
+}
+
+let mediaCacheInvalidator = null;
+function registerMediaCacheInvalidator(fn) {
+  mediaCacheInvalidator = typeof fn === 'function' ? fn : null;
+}
+function invalidateMediaFilesCache() {
+  if (mediaCacheInvalidator) mediaCacheInvalidator();
+}
+
 module.exports = {
   colors,
   config,
   getConfig,
   validators,
+  validateFilename,
+  resolveMediaFile,
+  normalizeMediaRelativePath,
+  getManifestFilename,
+  getSafeTrackPrefix,
+  getThumbnailFilename,
+  registerMediaCacheInvalidator,
+  invalidateMediaFilesCache,
   // Directories
   ROOT_DIR,
   MEMORY_DIR,

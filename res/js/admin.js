@@ -2,6 +2,7 @@ const socket = io();
 let playlist = [];
 let allMediaFiles = []; // Full media file list (persists across playlist launches)
 const selectedMediaFiles = new Set();
+const openMediaFolders = new Set();
 let isAddingSelectedFiles = false;
 let isLoadingAvailableFiles = false;
 let mainVideoIndex = -1;
@@ -537,8 +538,14 @@ async function loadFiles(forceRefresh = false) {
     displayFiles(files);
   } catch (error) {
     console.error('Error loading files:', error);
-    document.getElementById('file-browser').innerHTML =
-      '<div class="empty-message">Error loading files. Check server connection.</div>';
+    if (allMediaFiles.length > 0) {
+      if (typeof showStatus === 'function') {
+        showStatus('Error refreshing files. Keeping existing list.', 'error');
+      }
+    } else {
+      document.getElementById('file-browser').innerHTML =
+        '<div class="empty-message">Error loading files. Check server connection.</div>';
+    }
   } finally {
     isLoadingAvailableFiles = false;
     if (refreshButton) {
@@ -572,10 +579,14 @@ function displayFiles(files) {
     return;
   }
 
+  const existingFolderPaths = new Set();
   files.forEach((file) => {
     const segments = file.filename.split('/');
     let node = fileTree;
+    let currentPath = '';
     segments.slice(0, -1).forEach((folderName) => {
+      currentPath = currentPath ? `${currentPath}/${folderName}` : folderName;
+      existingFolderPaths.add(currentPath);
       if (!node.folders.has(folderName)) {
         node.folders.set(folderName, { folders: new Map(), files: [] });
       }
@@ -583,31 +594,41 @@ function displayFiles(files) {
     });
     node.files.push(file);
   });
+  openMediaFolders.forEach((folderPath) => {
+    if (!existingFolderPaths.has(folderPath)) openMediaFolders.delete(folderPath);
+  });
 
-  const renderTree = (node) => {
+  const renderTree = (node, parentPath = '') => {
     const fragment = document.createDocumentFragment();
 
     [...node.folders.keys()].sort((a, b) => a.localeCompare(b)).forEach((folderName) => {
+      const folderPath = parentPath ? `${parentPath}/${folderName}` : folderName;
+      const initiallyOpen = openMediaFolders.has(folderPath);
+
       const folder = document.createElement('div');
-      folder.className = 'media-folder';
+      folder.className = `media-folder${initiallyOpen ? ' is-open' : ''}`;
 
       const toggle = document.createElement('button');
       toggle.type = 'button';
       toggle.className = 'media-folder-name';
       toggle.textContent = `📁 ${folderName}`;
-      toggle.setAttribute('aria-expanded', 'false');
+      toggle.setAttribute('aria-expanded', String(initiallyOpen));
       folder.appendChild(toggle);
 
       const contents = document.createElement('div');
       contents.className = 'media-folder-contents';
+      contents.inert = !initiallyOpen;
       const innerContents = document.createElement('div');
       innerContents.className = 'media-folder-inner';
-      innerContents.appendChild(renderTree(node.folders.get(folderName)));
+      innerContents.appendChild(renderTree(node.folders.get(folderName), folderPath));
       contents.appendChild(innerContents);
       folder.appendChild(contents);
       toggle.addEventListener('click', () => {
         const isOpen = folder.classList.toggle('is-open');
         toggle.setAttribute('aria-expanded', String(isOpen));
+        contents.inert = !isOpen;
+        if (isOpen) openMediaFolders.add(folderPath);
+        else openMediaFolders.delete(folderPath);
       });
       fragment.appendChild(folder);
     });
@@ -774,6 +795,7 @@ function removeFromPlaylist(index) {
 
 function clearMediaPlaylist() {
   if (playlist.length === 0) return;
+  if (playlist.length > 1 && !confirm('Clear all items from the playlist?')) return;
 
   playlist = [];
   mainVideoIndex = -1;
@@ -781,6 +803,7 @@ function clearMediaPlaylist() {
   updateHevcWarning();
   updateDashboardStats();
   if (typeof refreshFfmpegFileList === 'function') refreshFfmpegFileList();
+  if (typeof showStatus === 'function') showStatus('Playlist cleared', 'info');
 }
 
 // Move playlist item
@@ -1016,7 +1039,7 @@ function updatePlaylistDisplay() {
 
 // Update HEVC warning
 function updateHevcWarning() {
-  const hasMKV = playlist.some(item => item.filename.endsWith('.mkv'));
+  const hasMKV = playlist.some(item => item.filename.toLowerCase().endsWith('.mkv'));
   const warning = document.getElementById('hevc-warning');
 
   // Only show if we have MKV files AND we are in the media view
@@ -1030,7 +1053,7 @@ function updateHevcWarning() {
       warning.classList.add('fade-out');
       setTimeout(() => {
         // Check again if it should still be hidden (avoid race conditions)
-        const stillNotNeeded = !playlist.some(item => item.filename.endsWith('.mkv')) || currentViewName !== 'media';
+        const stillNotNeeded = !playlist.some(item => item.filename.toLowerCase().endsWith('.mkv')) || currentViewName !== 'media';
         if (stillNotNeeded && warning.classList.contains('fade-out')) {
           warning.classList.remove('visible', 'fade-out');
         }

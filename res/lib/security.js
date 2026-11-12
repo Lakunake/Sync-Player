@@ -30,7 +30,7 @@ function banIp(ip, userAgent) {
   const hIp = hashValue(ip);
   if (bannedIpHashes.has(hIp)) return; // Already banned
   bannedIpHashes.add(hIp);
-  
+
   // Append hashed entry to SQLite ONLY if persistent bans are enabled
   if (!FFMPEG_DISABLE_BAN) {
     try {

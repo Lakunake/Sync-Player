@@ -15,6 +15,7 @@ env:
 
 jobs:
   build:
+    if: github.event_name == 'release' || contains(github.event.head_commit.message, '+')
     runs-on: ubuntu-latest
     permissions:
       contents: read

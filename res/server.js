@@ -23,7 +23,9 @@ const {
   SKIP_INTRO_SECONDS, CLIENT_CONTROLS_DISABLED, CLIENT_SYNC_DISABLED,
   CHAT_ENABLED, SERVER_MODE, DATA_HYDRATION, MAX_VOLUME,
   SUBTITLE_RENDERER, SUBTITLE_FIT, ADMIN_FINGERPRINT_LOCK,
-  FFMPEG_DISABLE_BAN
+  FFMPEG_DISABLE_BAN,
+  validateFilename, resolveMediaFile, getManifestFilename, getThumbnailFilename,
+  registerMediaCacheInvalidator
 } = require('./lib/config');
 
 const {
@@ -119,18 +121,23 @@ async function cleanupStaleTracks() {
     let cleaned = 0;
 
     const existsAsync = async (p) => fs.promises.access(p).then(() => true).catch(() => false);
+    const currentMediaFiles = await getMediaFiles();
+    const manifestToMediaPath = new Map(
+      currentMediaFiles.map(f => [getManifestFilename(f.filename), f.filename])
+    );
 
     for (const jsonFile of jsonFiles) {
-      const videoFilename = jsonFile.replace('.json', '');
-      const mediaPath = path.join(ROOT_DIR, 'media', videoFilename);
       const jsonPath = path.join(TRACKS_MANIFEST_DIR, jsonFile);
 
       try {
         const rawData = await fs.promises.readFile(jsonPath, 'utf8');
         const trackData = JSON.parse(rawData);
-        const mediaExists = await existsAsync(mediaPath);
+        const videoFilename = trackData.videoFilename || manifestToMediaPath.get(jsonFile) || jsonFile.replace(/\.json$/, '');
+        const mediaPath = path.join(ROOT_DIR, 'media', videoFilename);
+        const mediaExists = manifestToMediaPath.has(jsonFile) || await existsAsync(mediaPath);
 
         if (mediaExists) {
+          trackData.videoFilename = videoFilename;
           trackData.lastSeen = NOW;
           await fs.promises.writeFile(jsonPath, JSON.stringify(trackData, null, 2));
         } else {
@@ -139,7 +146,7 @@ async function cleanupStaleTracks() {
           if (NOW - lastSeen > STALE_MS) {
             if (trackData.externalTracks) {
               for (const track of trackData.externalTracks) {
-                const trackPath = path.join(TRACKS_DIR, track.path);
+                const trackPath = path.join(TRACKS_DIR, path.basename(track.path));
                 if (await existsAsync(trackPath)) {
                   await fs.promises.unlink(trackPath);
                   console.log(`[Cleanup] Deleted stale track: ${track.path}`);
@@ -150,10 +157,14 @@ async function cleanupStaleTracks() {
             console.log(`[Cleanup] Deleted stale metadata: ${jsonFile}`);
 
             if (await existsAsync(THUMBNAIL_DIR)) {
-              const baseVideoName = videoFilename.replace(/\.[^.]+$/, '');
+              const baseVideoName = path.basename(videoFilename).replace(/\.[^.]+$/, '');
+              const hashedThumbPrefix = getThumbnailFilename(videoFilename, 720, '');
               try {
                 const thumbs = await fs.promises.readdir(THUMBNAIL_DIR);
-                const matchingThumbs = thumbs.filter(f => f.startsWith(baseVideoName));
+                const matchingThumbs = thumbs.filter(f =>
+                  f.startsWith(hashedThumbPrefix + '.') ||
+                  (!videoFilename.includes('/') && f.startsWith(baseVideoName + '.'))
+                );
                 for (const thumb of matchingThumbs) {
                   await fs.promises.unlink(path.join(THUMBNAIL_DIR, thumb));
                   console.log(`[Cleanup] Deleted stale thumbnail: ${thumb}`);
@@ -165,6 +176,7 @@ async function cleanupStaleTracks() {
 
             cleaned++;
           } else if (!trackData.lastSeen) {
+            trackData.videoFilename = videoFilename;
             trackData.lastSeen = NOW;
             await fs.promises.writeFile(jsonPath, JSON.stringify(trackData, null, 2));
           }
@@ -211,55 +223,7 @@ function consolidateTime(state) {
   }
 }
 
-// Filename validation for defense-in-depth
-function validateFilename(filename) {
-  if (typeof filename !== 'string' || filename.length === 0) {
-    return { valid: false, error: 'Filename must be a non-empty string' };
-  }
-  if (filename.length > 1024) {
-    return { valid: false, error: 'Filename too long (max 1024 characters)' };
-  }
-  if (filename.includes('\\')) {
-    return { valid: false, error: 'Backslashes are not allowed in media paths' };
-  }
-  const shellMetachars = /[;&|$`<>\n\r]/;
-  if (shellMetachars.test(filename)) {
-    return { valid: false, error: 'Media path contains disallowed shell metacharacters' };
-  }
-  const pathSegments = filename.split('/');
-  const safePattern = /^[\p{L}\p{N}_\s\-.()\[\]]+$/u;
-  if (pathSegments.some(segment => !segment || segment === '.' || segment === '..' || !safePattern.test(segment))) {
-    return { valid: false, error: 'Media path contains disallowed characters' };
-  }
-  return { valid: true, sanitized: pathSegments.join('/') };
-}
-
-async function resolveMediaFile(filename) {
-  const validation = validateFilename(filename);
-  if (!validation.valid) {
-    const error = new Error(validation.error);
-    error.code = 'MEDIA_PATH_INVALID';
-    throw error;
-  }
-
-  const mediaRoot = await fs.promises.realpath(path.join(ROOT_DIR, 'media'));
-  const filePath = await fs.promises.realpath(path.join(mediaRoot, validation.sanitized));
-  const relativePath = path.relative(mediaRoot, filePath);
-  if (relativePath === '..' || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
-    const error = new Error('Media path resolves outside the media directory');
-    error.code = 'MEDIA_PATH_INVALID';
-    throw error;
-  }
-
-  const stats = await fs.promises.stat(filePath);
-  if (!stats.isFile()) {
-    const error = new Error('Media path is not a file');
-    error.code = 'MEDIA_PATH_INVALID';
-    throw error;
-  }
-
-  return { filename: validation.sanitized, filePath };
-}
+// validateFilename and resolveMediaFile are imported from ./lib/config
 
 // ==================== Express / SSL Setup ====================
 const app = express();
@@ -435,10 +399,14 @@ async function getTracksForFile(filename) {
   const { filename: safeFilename, filePath } = await resolveMediaFile(filename);
   const tracks = { audio: [], subtitles: [] };
 
-  // Read sidecar JSON manifest if exists
+  // Read sidecar JSON manifest if exists (checks unified manifest name first, then legacy basename)
   try {
-    const manifestFilename = safeFilename.replace(/[\\/]/g, '_') + '.json';
-    const manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestFilename);
+    const manifestFilename = getManifestFilename(safeFilename);
+    let manifestPath = path.join(TRACKS_MANIFEST_DIR, manifestFilename);
+    const legacyManifestPath = path.join(TRACKS_MANIFEST_DIR, path.basename(safeFilename) + '.json');
+    if (!fs.existsSync(manifestPath) && legacyManifestPath !== manifestPath && fs.existsSync(legacyManifestPath)) {
+      manifestPath = legacyManifestPath;
+    }
 
     if (fs.existsSync(manifestPath)) {
       const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -682,6 +650,10 @@ app.get('/api/server-mode', (req, res) => {
 });
 
 let mediaFilesCache = { data: null, lastUpdate: 0 };
+let mediaFilesScanPromise = null;
+registerMediaCacheInvalidator(() => {
+  mediaFilesCache = { data: null, lastUpdate: 0 };
+});
 
 // Helper to get media files
 function getMediaFiles() {
@@ -689,33 +661,82 @@ function getMediaFiles() {
   if (mediaFilesCache.data && (Date.now() - mediaFilesCache.lastUpdate < 20000)) {
     return Promise.resolve(mediaFilesCache.data);
   }
+  if (mediaFilesScanPromise) {
+    return mediaFilesScanPromise;
+  }
 
   const mediaPath = path.join(ROOT_DIR, 'media');
-  const mediaExtensions = new Set(['.mp4', '.mp3', '.avi', '.mov', '.wmv', '.mkv', '.webm', '.png', '.jpg', '.jpeg', '.webp']);
+  const mediaExtensions = new Set(['.mp4', '.mp3', '.avi', '.mov', '.wmv', '.mkv', '.webm', '.png', '.jpg', '.jpeg', '.webp', '.gif']);
   const mediaFiles = [];
 
-  const scanDirectory = async (directory) => {
-    const entries = await fs.promises.readdir(directory, { withFileTypes: true });
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of entries) {
-      const fullPath = path.join(directory, entry.name);
-      if (entry.isDirectory()) {
-        await scanDirectory(fullPath);
-      } else if (entry.isFile() && mediaExtensions.has(path.extname(entry.name).toLowerCase())) {
-        const filename = path.relative(mediaPath, fullPath).split(path.sep).join('/');
-        mediaFiles.push({
-          filename,
-          escapedFilename: escapeHTML(filename),
-          usesHEVC: path.extname(entry.name).toLowerCase() === '.mkv'
-        });
-      }
+  mediaFilesScanPromise = (async () => {
+    let mediaRoot;
+    try {
+      mediaRoot = await fs.promises.realpath(mediaPath);
+    } catch {
+      mediaFilesCache = { data: [], lastUpdate: Date.now() };
+      return [];
     }
-  };
 
-  return scanDirectory(mediaPath).then(() => {
+    const visitedDirs = new Set([mediaRoot]);
+
+    const scanDirectory = async (directory) => {
+      let entries;
+      try {
+        entries = await fs.promises.readdir(directory, { withFileTypes: true });
+      } catch (err) {
+        console.warn(`[MediaScan] Skipping unreadable directory ${directory}: ${err.message}`);
+        return;
+      }
+
+      entries.sort((a, b) => a.name.localeCompare(b.name));
+      for (const entry of entries) {
+        const fullPath = path.join(directory, entry.name);
+        let isDir = entry.isDirectory();
+        let isFile = entry.isFile();
+
+        if (entry.isSymbolicLink()) {
+          try {
+            const realTarget = await fs.promises.realpath(fullPath);
+            const relToRoot = path.relative(mediaRoot, realTarget);
+            if (relToRoot === '..' || relToRoot.startsWith(`..${path.sep}`) || path.isAbsolute(relToRoot)) {
+              continue; // Ignore symlinks pointing outside media/
+            }
+            const targetStats = await fs.promises.stat(realTarget);
+            if (targetStats.isDirectory()) {
+              if (visitedDirs.has(realTarget)) continue;
+              visitedDirs.add(realTarget);
+              isDir = true;
+            } else if (targetStats.isFile()) {
+              isFile = true;
+            }
+          } catch {
+            continue; // Broken or inaccessible symlink
+          }
+        }
+
+        if (isDir) {
+          await scanDirectory(fullPath);
+        } else if (isFile && mediaExtensions.has(path.extname(entry.name).toLowerCase())) {
+          const filename = path.relative(mediaPath, fullPath).split(path.sep).join('/');
+          if (!validateFilename(filename).valid) continue;
+          mediaFiles.push({
+            filename,
+            escapedFilename: escapeHTML(filename),
+            usesHEVC: path.extname(entry.name).toLowerCase() === '.mkv'
+          });
+        }
+      }
+    };
+
+    await scanDirectory(mediaPath);
     mediaFilesCache = { data: mediaFiles, lastUpdate: Date.now() };
     return mediaFiles;
+  })().finally(() => {
+    mediaFilesScanPromise = null;
   });
+
+  return mediaFilesScanPromise;
 }
 
 // Rate limiters for expensive operations
@@ -754,7 +775,7 @@ const thumbnailRateLimiter = rateLimit({
 
 app.get('/api/files', filesRateLimiter, async (req, res) => {
   try {
-    if (req.query.refresh === '1') {
+    if (req.query.refresh === '1' && (Date.now() - mediaFilesCache.lastUpdate >= 2000)) {
       mediaFilesCache = { data: null, lastUpdate: 0 };
     }
     const files = await getMediaFiles();
@@ -875,14 +896,7 @@ app.get('/api/thumbnail/:filename', thumbnailRateLimiter, async (req, res) => {
   width = Math.min(1920, Math.max(50, width)); // Clamp 50-1920
 
   // Use distinct cache file for different widths (backward compat for 720)
-  let thumbnailFilename = width === 720
-    ? safeFilename.replace(/\.[^.]+$/, '.jpg')
-    : safeFilename.replace(/\.[^.]+$/, `.${width}.jpg`);
-  if (safeFilename.includes('/')) {
-    const pathHash = crypto.createHash('sha1').update(safeFilename).digest('hex').slice(0, 10);
-    thumbnailFilename = `${pathHash}-${path.basename(thumbnailFilename)}`;
-  }
-
+  const thumbnailFilename = getThumbnailFilename(safeFilename, width, '.jpg');
   const thumbnailPath = path.join(THUMBNAIL_DIR, thumbnailFilename);
 
   // Audio check
@@ -890,27 +904,20 @@ app.get('/api/thumbnail/:filename', thumbnailRateLimiter, async (req, res) => {
   const isAudioFile = audioExtensions.some(ext => safeFilename.toLowerCase().endsWith(ext));
 
   if (isAudioFile) {
-    const audioThumbnailBase = safeFilename.replace(/\.[^.]+$/, '.jpg');
-    const audioThumbnailFilename = safeFilename.includes('/')
-      ? `${crypto.createHash('sha1').update(safeFilename).digest('hex').slice(0, 10)}-${path.basename(audioThumbnailBase)}`
-      : audioThumbnailBase;
+    const audioThumbnailFilename = getThumbnailFilename(safeFilename, 720, '.jpg');
     const audioThumbnailPath = path.join(THUMBNAIL_DIR, audioThumbnailFilename);
     const audioThumbnailPaths = [
       audioThumbnailPath,
-      audioThumbnailPath.replace(/\.jpg$/, '.png'),
-      audioThumbnailPath.replace(/\.jpg$/, '.webp')
+      path.join(THUMBNAIL_DIR, getThumbnailFilename(safeFilename, 720, '.png')),
+      path.join(THUMBNAIL_DIR, getThumbnailFilename(safeFilename, 720, '.webp'))
     ];
 
     // Older versions cached audio art separately for the 240px request.
-    const legacyAudioThumbnailBase = safeFilename.replace(/\.[^.]+$/, '.240.jpg');
-    const legacyAudioThumbnailFilename = safeFilename.includes('/')
-      ? `${crypto.createHash('sha1').update(safeFilename).digest('hex').slice(0, 10)}-${path.basename(legacyAudioThumbnailBase)}`
-      : legacyAudioThumbnailBase;
     const cachedAudioThumbnail = [
       ...audioThumbnailPaths,
-      path.join(THUMBNAIL_DIR, legacyAudioThumbnailFilename),
-      path.join(THUMBNAIL_DIR, legacyAudioThumbnailFilename.replace(/\.jpg$/, '.png')),
-      path.join(THUMBNAIL_DIR, legacyAudioThumbnailFilename.replace(/\.jpg$/, '.webp'))
+      path.join(THUMBNAIL_DIR, getThumbnailFilename(safeFilename, 240, '.jpg')),
+      path.join(THUMBNAIL_DIR, getThumbnailFilename(safeFilename, 240, '.png')),
+      path.join(THUMBNAIL_DIR, getThumbnailFilename(safeFilename, 240, '.webp'))
     ].find(candidate => fs.existsSync(candidate));
     if (cachedAudioThumbnail) {
       return res.json({
@@ -2220,7 +2227,7 @@ io.on('connection', (socket) => {
             // Criterion C: Size match (within +-1.5 MB tolerance)
             if (clientFile.size !== undefined) {
               try {
-                const serverFilePath = path.join(ROOT_DIR, 'media', playlistVideo.filename);
+                const { filePath: serverFilePath } = await resolveMediaFile(playlistVideo.filename);
                 const serverStats = await fs.promises.stat(serverFilePath);
                 const sizeDiff = Math.abs(clientFile.size - serverStats.size);
                 if (sizeDiff <= SIZE_TOLERANCE) {
@@ -2247,7 +2254,8 @@ io.on('connection', (socket) => {
                 '.png': 'image/png',
                 '.jpg': 'image/jpeg',
                 '.jpeg': 'image/jpeg',
-                '.webp': 'image/webp'
+                '.webp': 'image/webp',
+                '.gif': 'image/gif'
               };
               const expectedMime = mimeMap[serverExt] || '';
               // Exact match only -- a broad startsWith check (e.g. 'video/') would

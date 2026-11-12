@@ -187,3 +187,4 @@ res/public/jassub/default.woff2
 *.otf
 /zipped up
 temp-files.txt
+*.pyc

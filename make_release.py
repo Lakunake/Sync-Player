@@ -95,10 +95,33 @@ EXECUTABLE_EXTENSIONS = {".sh"}
 
 # Values config.env must have inside a public release zip.
 CONFIG_RELEASE_DEFAULTS = {
-    "SYNC_FFMPEG_TOOLS_PASSWORD": "",
-    "SYNC_PLAYER_KEY": "",
+    "SYNC_PORT": "3000",
+    "SYNC_USE_HTTPS": "true",
     "SYNC_SSL_KEY_FILE": "cert/cert.key",
     "SYNC_SSL_CERT_FILE": "cert/cert.crt",
+    "SYNC_VOLUME_STEP": "5",
+    "SYNC_MAX_VOLUME": "400",
+    "SYNC_SKIP_SECONDS": "5",
+    "SYNC_SKIP_INTRO_SECONDS": "87",
+    "SYNC_VIDEO_AUTOPLAY": "false",
+    "SYNC_JOIN_MODE": "sync",
+    "SYNC_CLIENT_CONTROLS_DISABLED": "false",
+    "SYNC_CLIENT_SYNC_DISABLED": "false",
+    "SYNC_BSL_MODE": "any",
+    "SYNC_BSL_ADVANCED_MATCH": "true",
+    "SYNC_BSL_MATCH_THRESHOLD": "1",
+    "SYNC_FFMPEG_DISABLE_BAN": "false",
+    "SYNC_FFMPEG_DISABLE_CONSEQUENCES": "false",
+    "SYNC_ADMIN_FINGERPRINT_LOCK": "false",
+    "SYNC_PLAYER_KEY": "",
+    "SYNC_CHAT_ENABLED": "true",
+    "SYNC_SERVER_MODE": "false",
+    "SYNC_DATA_HYDRATION": "true",
+    "SYNC_FFMPEG_TOOLS_PASSWORD": "",
+    "SYNC_SUBTITLE_RENDERER": "jassub",
+    "SYNC_SUBTITLE_FIT": "bottom",
+    "SYNC_SHOW_SSL_TIP": "true",
+    "SYNC_SKIP_FIREWALL_CHECK": "false",
 }
 SECRET_CONFIG_KEYS = {"SYNC_FFMPEG_TOOLS_PASSWORD", "SYNC_PLAYER_KEY"}
 
